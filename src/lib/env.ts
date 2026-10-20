@@ -17,5 +17,13 @@ export const hasSupabase = () => Boolean(env.supabaseUrl && env.supabaseAnonKey 
 export const hasUpstash = () => Boolean(env.upstashUrl && env.upstashToken);
 export const hasStripe = () => Boolean(env.stripeSecret);
 
-/** Demo mode: no Supabase, so the dashboard shows seeded data and needs no login. */
-export const isDemoMode = () => !hasSupabase();
+/**
+ * Demo mode: no Supabase, so the dashboard shows seeded data and needs no login.
+ * In production it must be switched on explicitly (GATEKEEP_DEMO=1), so a deploy with a missing
+ * Supabase variable never silently serves an unauthenticated dashboard.
+ */
+export const isDemoMode = () =>
+  !hasSupabase() && (process.env.NODE_ENV !== "production" || process.env.GATEKEEP_DEMO === "1");
+
+/** Production without Supabase and without GATEKEEP_DEMO=1: data features refuse to run. */
+export const isMisconfigured = () => !hasSupabase() && !isDemoMode();

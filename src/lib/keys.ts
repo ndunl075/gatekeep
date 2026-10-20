@@ -9,9 +9,13 @@ export function hashKey(plaintext: string): string {
 
 /** Creates a new secret key. The plaintext is returned once and must be shown to the user, never stored. */
 export function generateKey(projectId: string, name: string): { plaintext: string; key: ApiKey } {
-  const bytes = randomBytes(32);
+  // Rejection sampling keeps every character uniform (248 = 4 * 62).
   let body = "";
-  for (const b of bytes) body += ALPHABET[b % ALPHABET.length];
+  while (body.length < 40) {
+    for (const b of randomBytes(48)) {
+      if (b < 248 && body.length < 40) body += ALPHABET[b % ALPHABET.length];
+    }
+  }
   const plaintext = `gk_live_${body}`;
   return {
     plaintext,

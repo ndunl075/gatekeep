@@ -58,8 +58,9 @@ const TEMPLATES: { weight: number; t: Template }[] = [
         email: `n.ico+${(i % 40) + 2}@gmail.com`,
         ip: ip(r),
         signals: [
-          { id: "plus_alias", points: 15, detail: "Uses a +alias of n.ico@gmail.com" },
-          { id: "email_reuse", points: 30, detail: "nico@gmail.com already signed up 4 times" },
+          { id: "plus_alias", points: 10, detail: "Uses a +alias of n.ico@gmail.com" },
+          { id: "dot_alias", points: 10, detail: "Dots in a Gmail address are ignored by Gmail" },
+          { id: "email_reuse", points: 35, detail: "nico@gmail.com already signed up 4 times" },
         ],
       }),
     },
@@ -72,8 +73,8 @@ const TEMPLATES: { weight: number; t: Template }[] = [
         email: `${pick(r, FIRST)}${i}@${pick(r, GOOD_DOMAINS)}`,
         ip: "185.220.101.7",
         signals: [
-          { id: "ip_velocity", points: 45, detail: "6 signups from 185.220.101.7 in 24h" },
-          { id: "signup_burst", points: 30, detail: "41 signups in the last 10 minutes, 9x normal" },
+          { id: "ip_velocity", points: 60, detail: "6 signups from 185.220.101.7 in 24h" },
+          { id: "signup_burst", points: 25, detail: "41 signups in the last 10 minutes, 9x normal" },
         ],
       }),
     },
@@ -85,7 +86,8 @@ const TEMPLATES: { weight: number; t: Template }[] = [
       make: (r) => ({
         email: `xkqzvbt${Math.floor(r() * 99)}@outlook.com`,
         ip: ip(r),
-        signals: [{ id: "gibberish_email", points: 40, detail: "Email looks machine generated" }],
+        signals: [{ id: "gibberish_email", points: 25, detail: "Email looks machine generated" },
+          { id: "bot_user_agent", points: 30, detail: "User agent is python-requests" },],
       }),
     },
   },
@@ -117,6 +119,13 @@ const UAS = [
   "Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148",
 ];
 
+// Simplified gmail normalization for demo rows (the engine has the real one).
+function demoNormalize(email: string): string {
+  const [local, domain] = email.toLowerCase().split("@");
+  if (domain !== "gmail.com") return `${local.split("+")[0]}@${domain}`;
+  return `${local.split("+")[0].replace(/\./g, "")}@${domain}`;
+}
+
 export function generateDemoChecks(projectId: string, days = 30, now = Date.now()): CheckLog[] {
   const r = rng(42);
   const out: CheckLog[] = [];
@@ -138,7 +147,7 @@ export function generateDemoChecks(projectId: string, days = 30, now = Date.now(
         project_id: projectId,
         created_at: at.toISOString(),
         email,
-        normalized_email: email.toLowerCase(),
+        normalized_email: demoNormalize(email),
         email_domain: email.split("@")[1],
         ip,
         user_agent: pick(r, UAS),

@@ -1,4 +1,4 @@
-import { isDemoMode } from "../env";
+import { isDemoMode, isMisconfigured } from "../env";
 import { createDemoStore } from "../demo";
 import type { Store } from "./types";
 
@@ -12,6 +12,8 @@ export function getStore(): Store {
   if (!g.__gatekeepStore) {
     if (isDemoMode()) {
       g.__gatekeepStore = createDemoStore();
+    } else if (isMisconfigured()) {
+      throw new Error("gatekeep is not configured: set the Supabase env vars, or GATEKEEP_DEMO=1 for a demo deploy");
     } else {
       // Replaced by the Supabase store in the data-layer PR.
       throw new Error("Supabase store not implemented yet");

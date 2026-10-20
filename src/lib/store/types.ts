@@ -1,4 +1,4 @@
-import type { ApiKey, CheckLog, DailyStat, Decision, PlanId, Project } from "../types";
+import type { ApiKey, CheckLog, DailyStat, Decision, PlanId, Project, SignalId } from "../types";
 
 export interface ListChecksOptions {
   limit?: number;
@@ -46,11 +46,14 @@ export interface Store {
   dailyStats(projectId: string, days: number): Promise<DailyStat[]>;
   /** Number of checks since the start of the current UTC calendar month. */
   monthlyUsage(projectId: string): Promise<number>;
+  /** How often each signal fired in the last `days` days (UTC), most frequent first. */
+  topSignals(projectId: string, days: number): Promise<{ id: SignalId; count: number }[]>;
 }
 
 /**
- * Sliding-window event counters used by velocity / burst checks.
+ * Sliding-window event counters used by velocity / burst / reuse checks.
  * Implemented by Upstash Redis, Postgres (counts over check logs) and memory.
+ * Windows up to 31 days must be supported (MAX_WINDOW_SEC in memory.ts).
  */
 export interface Counters {
   /** Records one event for `key` now and returns the count inside the last `windowSec`, including this one. */
