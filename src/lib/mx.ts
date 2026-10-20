@@ -1,4 +1,4 @@
-import { resolve4, resolve6, resolveMx as dnsResolveMx } from "node:dns/promises";
+import { Resolver } from "node:dns/promises";
 
 const TIMEOUT_MS = 1500;
 const TTL_KNOWN_MS = 60 * 60_000;
@@ -13,6 +13,11 @@ interface Entry {
   value: boolean | null;
   expires: number;
 }
+
+// A dedicated resolver whose own timeout stops the query (the default resolver keeps retrying for ~20s after
+// our race has given up), one attempt per server.
+let resolver: Resolver | null = null;
+const dns = () => (resolver ??= new Resolver({ timeout: TIMEOUT_MS, tries: 1 }));
 
 // Insertion ordered, so the first key is always the oldest entry.
 const cache = new Map<string, Entry>();
@@ -37,7 +42,7 @@ function isNoRecords(err: unknown): boolean {
 /** Resolves true (has records), false (definitely none) or rejects with the underlying DNS error. */
 async function lookup(domain: string): Promise<boolean> {
   try {
-    const records = await dnsResolveMx(domain);
+    const records = await dns().resolveMx(domain);
     if (records.length > 0) {
       // RFC 7505 "null MX": a single "." exchange says the domain accepts no mail at all.
       return records.some((r) => r.exchange.replace(/\.$/, "") !== "");
@@ -46,7 +51,7 @@ async function lookup(domain: string): Promise<boolean> {
     if (!isNoRecords(err)) throw err;
   }
   // No MX: RFC 5321 treats the domain's own A / AAAA as an implicit MX.
-  const results = await Promise.allSettled([resolve4(domain), resolve6(domain)]);
+  const results = await Promise.allSettled([dns().resolve4(domain), dns().resolve6(domain)]);
   if (results.some((r) => r.status === "fulfilled" && r.value.length > 0)) return true;
   // Unknown if either family failed for a reason other than "no records".
   const failed = results.find((r) => r.status === "rejected" && !isNoRecords(r.reason));

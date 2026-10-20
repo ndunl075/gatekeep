@@ -1,7 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const dns = vi.hoisted(() => ({ resolveMx: vi.fn(), resolve4: vi.fn(), resolve6: vi.fn() }));
-vi.mock("node:dns/promises", () => dns);
+const ctor = vi.hoisted(() => ({ args: [] as unknown[] }));
+vi.mock("node:dns/promises", () => ({
+  Resolver: class {
+    constructor(...args: unknown[]) {
+      ctor.args.push(args);
+    }
+    resolveMx = dns.resolveMx;
+    resolve4 = dns.resolve4;
+    resolve6 = dns.resolve6;
+  },
+}));
 
 import { clearMxCache, resolveMx } from "./mx";
 
@@ -24,6 +34,13 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("resolveMx", () => {
+  it("uses one dedicated resolver with its own 1500ms timeout and a single try", async () => {
+    dns.resolveMx.mockResolvedValue([{ exchange: "mx.example.com", priority: 10 }]);
+    await resolveMx("a.example");
+    await resolveMx("b.example");
+    expect(ctor.args).toEqual([[{ timeout: 1500, tries: 1 }]]);
+  });
+
   it("true when the domain has MX records", async () => {
     dns.resolveMx.mockResolvedValue([{ exchange: "mx.example.com", priority: 10 }]);
     expect(await resolveMx("example.com")).toBe(true);

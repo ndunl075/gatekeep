@@ -66,6 +66,37 @@ describe("POST /api/v1/check (demo store)", () => {
     expect(res.status).toBe(413);
   });
 
+  it("413 from Content-Length alone, before reading anything", async () => {
+    const res = await post(null, { authorization: `Bearer ${DEMO_API_KEY}`, "content-length": "999999" }, "{}");
+    expect(res.status).toBe(413);
+  });
+
+  it("413 for a chunked body that grows past the cap, and stops reading", async () => {
+    let pulled = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled++;
+        controller.enqueue(new Uint8Array(4096).fill(97));
+        if (pulled > 1000) controller.close();
+      },
+    });
+    const res = await POST(
+      new Request("http://localhost/api/v1/check", {
+        method: "POST",
+        headers: { authorization: `Bearer ${DEMO_API_KEY}` },
+        body: stream,
+        duplex: "half",
+      } as RequestInit),
+    );
+    expect(res.status).toBe(413);
+    expect(pulled).toBeLessThan(20);
+  });
+
+  it("400 for an empty body", async () => {
+    const res = await post(null, undefined, "");
+    expect(res.status).toBe(400);
+  });
+
   it("405 with Allow for other methods", async () => {
     const res = GET();
     expect(res.status).toBe(405);

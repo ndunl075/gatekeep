@@ -23,14 +23,41 @@ function badRequest(message: string, status = 400): Response {
   );
 }
 
+/** Reads at most `max` bytes. Returns null when the body is larger, without buffering the rest. */
+async function readCapped(request: Request, max: number): Promise<string | null> {
+  const declared = Number(request.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > max) return null;
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let at = 0;
+  for (const c of chunks) {
+    bytes.set(c, at);
+    at += c.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
 export async function POST(request: Request): Promise<Response> {
-  let text: string;
+  let text: string | null;
   try {
-    text = await request.text();
+    text = await readCapped(request, MAX_BODY_BYTES);
   } catch {
     return badRequest("Could not read the request body.");
   }
-  if (text.length > MAX_BODY_BYTES) return badRequest("Request body is too large.", 413);
+  if (text === null) return badRequest("Request body is too large.", 413);
 
   let body: unknown;
   try {

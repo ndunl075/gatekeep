@@ -1,6 +1,8 @@
 import { after } from "next/server";
 import { z } from "zod";
-import { getCounters } from "./counters";
+import { getCounters, getCountersName } from "./counters";
+import { withTimeout } from "./counters/util";
+import { DEMO_API_KEY } from "./demo";
 import { runChecks, type EngineContext, type EngineResult } from "./engine";
 import { hashKey } from "./keys";
 import { resolveMx } from "./mx";
@@ -19,6 +21,17 @@ const USAGE_TTL_MS = 30_000;
 const TOUCH_INTERVAL_MS = 60_000;
 const LOG_INTERVAL_MS = 60_000;
 const MAX_KEY_PART = 128;
+/** Everything between "key looked up" and "project, limits and usage known". A slow store must not stall signups. */
+const AUTH_TIMEOUT_MS = 1000;
+const USAGE_TIMEOUT_MS = 300;
+/** Background / playground writes. */
+const WRITE_TIMEOUT_MS = 5000;
+const PLAYGROUND_WRITE_TIMEOUT_MS = 2000;
+/** Unknown keys are remembered briefly so a scanner cannot turn every guess into a database read. */
+const NEGATIVE_TTL_MS = 60_000;
+const NEGATIVE_MAX = 1000;
+/** What generateKey() produces, plus the public demo key. Anything else is rejected before hashing. */
+const KEY_SHAPE = /^gk_live_[0-9A-Za-z]{40}$/;
 
 const optional = (max: number) =>
   z
@@ -53,6 +66,8 @@ export interface CheckDeps {
   runChecks: (input: CheckInput, ctx: EngineContext) => Promise<EngineResult>;
   /** Runs `fn` after the response is sent. Defaults to next/server `after()`. */
   defer: (fn: () => Promise<unknown>) => void;
+  /** False when the configured counters cannot hold the per-key rate limit (Postgres): limit per instance. */
+  sharedRateLimit: () => boolean;
   now: () => number;
 }
 
@@ -74,6 +89,7 @@ const defaultDeps: CheckDeps = {
       void run();
     }
   },
+  sharedRateLimit: () => getCountersName() !== "postgres",
   now: Date.now,
 };
 
@@ -102,9 +118,35 @@ export function createCheckService(overrides: Partial<CheckDeps> = {}) {
     console.warn(`[gatekeep] degraded check (fail open), project ${projectId}: ${fresh.join(", ")}`);
   }
 
-  /** Over the limit? Backend errors fail open to a per-instance limiter. */
+  // sha256 of keys that did not resolve → expiry. Insertion ordered, refreshed on hit, oldest evicted.
+  const unknownKeys = new Map<string, number>();
+
+  function isKnownBad(hash: string): boolean {
+    const expires = unknownKeys.get(hash);
+    if (expires === undefined) return false;
+    unknownKeys.delete(hash);
+    if (expires <= deps.now()) return false;
+    unknownKeys.set(hash, expires);
+    return true;
+  }
+
+  function rememberBad(hash: string) {
+    unknownKeys.delete(hash);
+    unknownKeys.set(hash, deps.now() + NEGATIVE_TTL_MS);
+    while (unknownKeys.size > NEGATIVE_MAX) {
+      const oldest = unknownKeys.keys().next().value;
+      if (oldest === undefined) break;
+      unknownKeys.delete(oldest);
+    }
+  }
+
+  /**
+   * Over the limit? Postgres counters cannot hold arbitrary keys, so there (and whenever the backend errors)
+   * the limit is per instance: approximate on serverless, but it never blocks a signup.
+   */
   async function overRateLimit(keyId: string): Promise<boolean> {
     const k = `gk:rl:${keyId}`;
+    if (!deps.sharedRateLimit()) return (await localLimiter.hit(k, 60)) > RATE_LIMIT_PER_MIN;
     try {
       return (await deps.counters().hit(k, 60)) > RATE_LIMIT_PER_MIN;
     } catch {
@@ -121,7 +163,7 @@ export function createCheckService(overrides: Partial<CheckDeps> = {}) {
       cached.count++;
       return cached.count - 1;
     }
-    const count = await store.monthlyUsage(projectId);
+    const count = await withTimeout(store.monthlyUsage(projectId), USAGE_TIMEOUT_MS, "usage lookup");
     usage.set(projectId, { month, count: count + 1, at: t });
     if (usage.size > 5000) usage.clear();
     return count;
@@ -209,32 +251,48 @@ export function createCheckService(overrides: Partial<CheckDeps> = {}) {
       latencyMs: elapsed(),
     });
 
-    let store: Store;
-    let key: ApiKey | null;
-    let project: Project | null;
-    let limited = false;
-    let used = 0;
+    const unauthorized = (message = "Missing or invalid API key. Send it as 'Authorization: Bearer gk_live_...'.") =>
+      bad(401, "unauthorized", message);
+
+    // Cheap rejections first: no store, no hashing for keys that cannot be real.
+    if (!apiKeyPlaintext || !(KEY_SHAPE.test(apiKeyPlaintext) || apiKeyPlaintext === DEMO_API_KEY)) return unauthorized();
+    const keyHash = hashKey(apiKeyPlaintext);
+    if (isKnownBad(keyHash)) return unauthorized();
+
+    type Auth =
+      | { ok: true; store: Store; key: ApiKey; project: Project; limited: boolean; used: number }
+      | { ok: false; message?: string };
+    let auth: Auth;
     try {
-      store = deps.store();
-      key = apiKeyPlaintext ? await store.findKeyByHash(hashKey(apiKeyPlaintext)) : null;
-      if (!key) {
-        return bad(401, "unauthorized", "Missing or invalid API key. Send it as 'Authorization: Bearer gk_live_...'.");
-      }
-      const keyId = key.id;
-      [project, limited, used] = await Promise.all([
-        store.getProject(key.project_id),
-        overRateLimit(keyId),
-        monthlyUsage(store, key.project_id).catch((err) => {
-          logFailure("usage lookup failed", err);
-          return 0;
-        }),
-      ]);
-      if (!project) return bad(401, "unauthorized", "This API key does not belong to a project.");
+      auth = await withTimeout(
+        (async (): Promise<Auth> => {
+          const store = deps.store();
+          const key = await store.findKeyByHash(keyHash);
+          if (!key) {
+            rememberBad(keyHash);
+            return { ok: false };
+          }
+          const [project, limited, used] = await Promise.all([
+            store.getProject(key.project_id),
+            overRateLimit(key.id),
+            monthlyUsage(store, key.project_id).catch((err) => {
+              logFailure("usage lookup failed", err);
+              return 0;
+            }),
+          ]);
+          if (!project) return { ok: false, message: "This API key does not belong to a project." };
+          return { ok: true, store, key, project, limited, used };
+        })(),
+        AUTH_TIMEOUT_MS,
+        "store",
+      );
     } catch (err) {
-      // We cannot even identify the caller: a gatekeep outage must not break their signup.
+      // We cannot even identify the caller (store down, hung or misconfigured): that must not break their signup.
       const email = (body as { email?: unknown } | null)?.email;
       return { status: 200, body: failOpen(crypto.randomUUID(), email, startedAt, err), latencyMs: elapsed() };
     }
+    if (!auth.ok) return unauthorized(auth.message);
+    const { store, key, project, limited, used } = auth;
 
     if (limited) {
       return {
@@ -261,9 +319,9 @@ export function createCheckService(overrides: Partial<CheckDeps> = {}) {
       persist: (log) =>
         deps.defer(async () => {
           try {
-            await store.insertCheck(log);
+            await withTimeout(store.insertCheck(log), WRITE_TIMEOUT_MS, "insertCheck");
             const lastUsed = keyRef.last_used_at ? Date.parse(keyRef.last_used_at) : 0;
-            if (deps.now() - lastUsed >= TOUCH_INTERVAL_MS) await store.touchKey(keyRef.id);
+            if (deps.now() - lastUsed >= TOUCH_INTERVAL_MS) await withTimeout(store.touchKey(keyRef.id), WRITE_TIMEOUT_MS, "touchKey");
           } catch (err) {
             logFailure("could not record check", err);
           }
@@ -284,7 +342,7 @@ export function createCheckService(overrides: Partial<CheckDeps> = {}) {
       dryRun,
       startedAt: deps.now(),
       // Awaited, so the check is on the Checks page by the time the form shows the result.
-      persist: (log) => deps.store().insertCheck(log),
+      persist: (log) => withTimeout(deps.store().insertCheck(log), PLAYGROUND_WRITE_TIMEOUT_MS, "insertCheck"),
     });
   }
 

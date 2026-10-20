@@ -64,6 +64,129 @@ describe("auth", () => {
   });
 });
 
+describe("auth hardening", () => {
+  const wellFormed = (n: number) => `gk_live_${String(n).padStart(40, "0").replace(/0/g, "a").slice(0, 36)}${String(n).padStart(4, "0")}`;
+
+  it("a keyless request is a 401 even when the store is broken", async () => {
+    const { check } = await setup({
+      store: () => {
+        throw new Error("not configured");
+      },
+    });
+    const out = await check(signup(1), null);
+    expect(out.status).toBe(401);
+  });
+
+  it.each(["gk_live_nope", "sk_live_" + "a".repeat(40), "gk_live_" + "a".repeat(39), "gk_live_" + "a".repeat(41), "gk_live_" + "a".repeat(39) + "-"])(
+    "malformed key %s is a 401 without touching the store",
+    async (bad) => {
+      const { check, store } = await setup();
+      const find = vi.spyOn(store, "findKeyByHash");
+      expect((await check(signup(1), bad)).status).toBe(401);
+      expect(find).not.toHaveBeenCalled();
+    },
+  );
+
+  it("the demo key shape is allowed through to the lookup", async () => {
+    const { check, store } = await setup();
+    const find = vi.spyOn(store, "findKeyByHash");
+    expect((await check(signup(1), "gk_live_demo_key_for_the_playground_only")).status).toBe(401); // not in this store
+    expect(find).toHaveBeenCalledTimes(1);
+  });
+
+  it("remembers unknown keys for 60s", async () => {
+    let t = Date.now();
+    const { service, store } = await setup({ now: () => t });
+    const find = vi.spyOn(store, "findKeyByHash");
+    const unknown = wellFormed(1);
+    expect((await service.runCheck(unknown, signup(1))).status).toBe(401);
+    expect((await service.runCheck(unknown, signup(1))).status).toBe(401);
+    expect(find).toHaveBeenCalledTimes(1);
+    t += 61_000;
+    await service.runCheck(unknown, signup(1));
+    expect(find).toHaveBeenCalledTimes(2);
+  });
+
+  it("the negative cache is bounded (oldest evicted)", async () => {
+    const { service, store } = await setup();
+    const find = vi.spyOn(store, "findKeyByHash");
+    for (let i = 0; i < 1001; i++) await service.runCheck(wellFormed(i), signup(1));
+    expect(find).toHaveBeenCalledTimes(1001);
+    await service.runCheck(wellFormed(1000), signup(1)); // newest: cached
+    expect(find).toHaveBeenCalledTimes(1001);
+    await service.runCheck(wellFormed(0), signup(1)); // oldest: evicted
+    expect(find).toHaveBeenCalledTimes(1002);
+  });
+});
+
+describe("hung dependencies", () => {
+  beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] }));
+  afterEach(() => vi.useRealTimers());
+  const never = () => new Promise<never>(() => {});
+
+  it("fails open when the key lookup never answers", async () => {
+    const { service, store, plaintext } = await setup();
+    vi.spyOn(store, "findKeyByHash").mockImplementation(never);
+    const p = service.runCheck(plaintext, signup(1, { email: "Maya@Northwind.io" }));
+    await vi.advanceTimersByTimeAsync(1000);
+    const out = await p;
+    expect(out.status).toBe(200);
+    expect(out.body).toMatchObject({ decision: "allow", error: "internal_error", normalized_email: "maya@northwind.io" });
+  });
+
+  it("fails open when the project lookup never answers", async () => {
+    const { service, store, plaintext } = await setup();
+    vi.spyOn(store, "getProject").mockImplementation(never);
+    const p = service.runCheck(plaintext, signup(1));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect((await p).body).toMatchObject({ decision: "allow", error: "internal_error" });
+  });
+
+  it("does not remember a key as unknown just because the store hung", async () => {
+    const { service, store, plaintext } = await setup();
+    const find = vi.spyOn(store, "findKeyByHash").mockImplementationOnce(never);
+    const p = service.runCheck(plaintext, signup(1));
+    await vi.advanceTimersByTimeAsync(1000);
+    await p;
+    expect((await service.runCheck(plaintext, signup(2))).status).toBe(200);
+    expect((await service.runCheck(plaintext, signup(3))).body).not.toHaveProperty("error");
+    expect(find).toHaveBeenCalledTimes(3);
+  });
+
+  it("a hung usage count means 'not exceeded' after 300ms, not an error", async () => {
+    const { service, store, plaintext, flush } = await setup();
+    vi.spyOn(store, "monthlyUsage").mockImplementation(never);
+    const p = service.runCheck(plaintext, signup(1, { email: "burner@mailinator.com" }));
+    await vi.advanceTimersByTimeAsync(300);
+    const out = await p;
+    expect(out.status).toBe(200);
+    expect(out.body).toMatchObject({ decision: "block" });
+    expect(out.body).not.toHaveProperty("error");
+    expect(out.body).not.toHaveProperty("quota_exceeded");
+    await flush();
+  });
+
+  it("the response does not wait for a hung insert, and the write is abandoned", async () => {
+    const { service, store, plaintext, flush } = await setup();
+    vi.spyOn(store, "insertCheck").mockImplementation(never);
+    const out = await service.runCheck(plaintext, signup(1)); // resolves with no timers advanced
+    expect(out.body).toMatchObject({ decision: "allow" });
+    await vi.advanceTimersByTimeAsync(5000);
+    await flush(); // the deferred work settles instead of hanging
+    expect(console.error).toHaveBeenCalled();
+  });
+
+  it("the playground waits at most 2s for its insert", async () => {
+    const { service, store, project } = await setup();
+    vi.spyOn(store, "insertCheck").mockImplementation(never);
+    const p = service.runCheckForProject(project, { email: "burner@mailinator.com" });
+    await vi.advanceTimersByTimeAsync(2000);
+    const out = await p;
+    expect(out).toMatchObject({ decision: "block" });
+    expect(out.error).toBeUndefined();
+  });
+});
+
 describe("validation", () => {
   it.each([
     ["no email", {}, /email/],
@@ -182,6 +305,16 @@ describe("rate limit", () => {
     await store.insertKey(other.key);
     expect((await check(signup(1))).status).toBe(429);
     expect((await check(signup(1), other.plaintext)).status).toBe(200);
+  });
+
+  it("without a shared rate limit (Postgres) it limits per instance and never asks the counters", async () => {
+    const hit = vi.fn<Counters["hit"]>(async () => 1);
+    const counters: Counters = { hit, count: async () => 0 };
+    const { service, plaintext } = await setup({ counters: () => counters, sharedRateLimit: () => false });
+    let last = 200;
+    for (let i = 0; i < RATE_LIMIT_PER_MIN + 1; i++) last = (await service.runCheck(plaintext, signup(i))).status;
+    expect(last).toBe(429);
+    expect(hit.mock.calls.filter(([k]) => String(k).startsWith("gk:rl:"))).toHaveLength(0);
   });
 
   it("falls back to an in-process limiter when the counters reject", async () => {

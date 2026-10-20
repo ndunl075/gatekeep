@@ -13,19 +13,25 @@ Authorization: Bearer gk_live_...
         "normalized_email", "latency_ms" }
 ```
 
-1. `readKeyFromHeaders` → `hashKey` → `store.findKeyByHash` → project. 401 if missing/revoked. Non-JSON body → 400
-   (before this step), oversized body (>16 KB) → 413.
-2. Per-key rate limit: 600 requests/minute via counters (`gk:rl:{keyId}`) → 429 + `Retry-After`. If the counters
-   backend fails, an in-process limiter takes over (fail open). Then the body is validated with zod → 400
-   `{error:"invalid_request", message}`; unknown fields are ignored.
+1. `readKeyFromHeaders` → shape check (`gk_live_` + 40 alphanumerics, or the demo key) → `hashKey` →
+   `store.findKeyByHash` → project. 401 if missing, malformed, unknown or revoked; the first two never touch the
+   store, and unknown keys are remembered for 60s (bounded) so guessing cannot become database load. Non-JSON body →
+   400 (before this step); body over 16 KB → 413 (rejected from `Content-Length`, or while streaming).
+   Everything from the key lookup to "project, limit and usage known" has a 1s budget; if the store hangs or throws,
+   the request fails open (step 6).
+2. Per-key rate limit: 600 requests/minute via counters (`gk:rl:{keyId}`) → 429 + `Retry-After`. With **Upstash** the
+   limit is global. With **Postgres counters** (no Upstash) it is per server instance, because the `checks` table
+   cannot hold arbitrary keys: approximate on serverless, but it never blocks a signup. Upstash is recommended when
+   a global limit matters. A failing counters backend also falls back to the per-instance limiter. Then the body is
+   validated with zod → 400 `{error:"invalid_request", message}`; unknown fields are ignored.
 3. Quota: `store.monthlyUsage(project) >= PLANS[plan].checksPerMonth` → still run the check but add
-   `"quota_exceeded": true` to the response. The usage count is cached per project for 30s. **Fail open**:
+   `"quota_exceeded": true` to the response. The usage count is cached per project for 30s; a count that takes over 300ms counts as "not exceeded". **Fail open**:
    gatekeep must never break a customer's signup.
 4. `runChecks(input, ctx)` (engine) → score, signals, decision. `degraded` markers are logged (at most once a
    minute per marker).
-5. `store.insertCheck(log)` and `store.touchKey` run in `after()` so the response is not blocked (`touchKey` at most
-   once a minute per key). Respond with `Cache-Control: no-store` and `X-Gatekeep-Latency`. Target p50 < 150ms; MX
-   lookups have a 1.5s timeout and are cached (1h; 5 min when unknown). A `no_mx` answer is only trusted while a DNS
+5. `store.insertCheck(log)` and `store.touchKey` run in `after()` so the response is not blocked (bounded to 5s; `touchKey` at
+   most once a minute per key). Respond with `Cache-Control: no-store` and `X-Gatekeep-Latency`. Target p50 < 150ms; MX
+   lookups use a dedicated resolver with a 1.5s timeout (one try) and are cached (1h; 5 min when unknown). A `no_mx` answer is only trusted while a DNS
    canary (gmail.com) resolves, so a broken resolver cannot flag every domain.
 6. Errors inside gatekeep (including the store being down) return `decision: "allow"` with `"error"` set, never a 5xx.
 
