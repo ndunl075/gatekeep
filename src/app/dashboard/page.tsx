@@ -14,6 +14,7 @@ import {
   summarySentence,
   totals,
 } from "@/components/dashboard/helpers";
+import { averageScoreSince, rangeStartIso } from "@/components/dashboard/queries";
 import { PLANS } from "@/lib/plans";
 import { getCurrentProject, getCurrentUser } from "@/lib/session";
 import { getStore } from "@/lib/store";
@@ -25,17 +26,16 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
   const [project, user] = await Promise.all([getCurrentProject(), getCurrentUser()]);
   const store = getStore();
 
-  const [days, signals, recentBlocks, sample, used] = await Promise.all([
+  const [days, signals, recentBlocks, avg, used] = await Promise.all([
     store.dailyStats(project.id, range),
     store.topSignals(project.id, range),
     store.listChecks(project.id, { decision: "block", limit: 5 }),
-    store.listChecks(project.id, { limit: 200 }),
+    averageScoreSince(store, project.id, rangeStartIso(range)),
     store.monthlyUsage(project.id),
   ]);
 
   const t = totals(days);
   const saved = creditsSavedCents(t.block, project.credit_value_cents);
-  const avgScore = sample.length ? Math.round(sample.reduce((s, c) => s + c.score, 0) / sample.length) : null;
   const plan = PLANS[project.plan];
   const first = user?.email.split("@")[0] ?? "there";
   const name = first.charAt(0).toUpperCase() + first.slice(1);
@@ -77,7 +77,7 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
           rangeDays={range}
           signals={signals}
           checked={t.checked}
-          avgScore={avgScore}
+          avgScore={avg.avg}
           blocked={t.block}
           challenged={t.challenge}
           recentBlocks={recentBlocks}

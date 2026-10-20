@@ -11,6 +11,7 @@ import {
   totals,
   weekdayLetter,
   formatTime,
+  parseBefore,
 } from "./helpers";
 import { parseSettings } from "./schemas";
 
@@ -103,5 +104,53 @@ describe("parseSettings", () => {
     const r = parseSettings({ name: "", creditDollars: "abc", challenge: "-1", block: "101" });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(Object.keys(r.errors).sort()).toEqual(["block", "challenge", "creditDollars", "name"]);
+  });
+});
+
+
+import { averageScoreSince, rangeStartIso } from "./queries";
+import type { CheckLog } from "@/lib/types";
+
+describe("parseBefore", () => {
+  it("accepts strict ISO and normalizes", () => {
+    expect(parseBefore("2026-10-20T14:05:00Z")).toBe("2026-10-20T14:05:00.000Z");
+    expect(parseBefore("2026-10-20T14:05:00+02:00")).toBe("2026-10-20T12:05:00.000Z");
+  });
+  it("ignores everything else", () => {
+    for (const v of ["", "yesterday", "2026-10-20", "Oct 20 2026", "2026-13-40T99:00:00Z"]) expect(parseBefore(v)).toBeUndefined();
+  });
+});
+
+describe("parseSettings credit value", () => {
+  const base = { name: "A", challenge: "40", block: "70" };
+  it("converts from the string without float errors", () => {
+    expect(parseSettings({ ...base, creditDollars: "0.29" })).toMatchObject({ ok: true, values: { credit_value_cents: 29 } });
+    expect(parseSettings({ ...base, creditDollars: "1.1" })).toMatchObject({ ok: true, values: { credit_value_cents: 110 } });
+    expect(parseSettings({ ...base, creditDollars: "5" })).toMatchObject({ ok: true, values: { credit_value_cents: 500 } });
+  });
+  it("rejects exponent, hex, sub-cent and negative input", () => {
+    for (const v of ["1e3", "0x10", "0.285", "-1", ".5", "1,5"]) expect(parseSettings({ ...base, creditDollars: v }).ok).toBe(false);
+  });
+});
+
+describe("averageScoreSince", () => {
+  const mk = (n: number, hoursAgo: number, score: number): CheckLog =>
+    ({ id: String(n), created_at: new Date(Date.UTC(2026, 9, 20, 12) - hoursAgo * 3_600_000).toISOString(), score }) as CheckLog;
+  const rows = [mk(1, 0, 10), mk(2, 1, 20), mk(3, 2, 30), mk(4, 100, 90)];
+  const store = {
+    async listChecks(_p: string, o: { limit?: number; before?: string } = {}) {
+      return rows.filter((r) => !o.before || r.created_at < o.before).slice(0, o.limit ?? 50);
+    },
+  };
+  it("averages only rows inside the range", async () => {
+    const r = await averageScoreSince(store, "p", rows[2].created_at);
+    expect(r).toEqual({ avg: 20, count: 3, truncated: false });
+  });
+  it("reports truncation at the cap", async () => {
+    const r = await averageScoreSince(store, "p", "2000-01-01T00:00:00.000Z", 2);
+    expect(r).toEqual({ avg: 15, count: 2, truncated: true });
+  });
+  it("range start is the UTC midnight n-1 days back", () => {
+    expect(rangeStartIso(7, Date.UTC(2026, 9, 20, 5))).toBe("2026-10-14T00:00:00.000Z");
   });
 });

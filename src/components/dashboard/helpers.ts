@@ -120,3 +120,10 @@ export function quotaPercent(used: number, limit: number): number {
   if (limit <= 0) return 0;
   return Math.min(100, Math.round((used / limit) * 100));
 }
+
+/** Only a strict ISO-8601 UTC timestamp is accepted; it is re-serialized before it reaches the store. */
+export function parseBefore(raw: string): string | undefined {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$/.test(raw)) return undefined;
+  const t = Date.parse(raw);
+  return Number.isNaN(t) ? undefined : new Date(t).toISOString();
+}

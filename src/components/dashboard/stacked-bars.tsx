@@ -22,7 +22,6 @@ export function StackedBars({ days, height = 160 }: { days: DailyStat[]; height?
   const [active, setActive] = useState<number | null>(null);
   const axisMax = niceMax(Math.max(0, ...days.map((d) => d.allow + d.challenge + d.block)));
   const n = days.length;
-  const dense = n > 14;
   const shown = active !== null ? days[active] : null;
 
   return (
@@ -32,7 +31,7 @@ export function StackedBars({ days, height = 160 }: { days: DailyStat[]; height?
           <div key={p} className="absolute inset-x-0 border-t border-line/70" style={{ bottom: `${p}%` }} />
         ))}
         <span className="tabular absolute -top-4 left-0 font-mono text-[10px] text-faint">{formatCount(axisMax)}</span>
-        <div className={cx("absolute inset-0 flex items-end", dense ? "gap-[3px]" : "gap-2")}>
+        <div className="absolute inset-0 flex items-end">
           {days.map((d, i) => {
             const segs = barSegments(d, axisMax);
             return (
@@ -40,16 +39,18 @@ export function StackedBars({ days, height = 160 }: { days: DailyStat[]; height?
                 key={d.date}
                 type="button"
                 aria-label={`${formatDay(d.date)}: ${d.allow} allowed, ${d.challenge} challenged, ${d.block} blocked`}
-                className="flex h-full min-w-0 flex-1 flex-col justify-end outline-none"
+                className="flex h-full min-w-0 flex-1 flex-col items-center justify-end outline-none"
                 onMouseEnter={() => setActive(i)}
                 onFocus={() => setActive(i)}
                 onClick={() => setActive(i)}
               >
-                <div className={cx("flex w-full flex-col-reverse gap-px", active === i ? "opacity-100" : active === null ? "opacity-100" : "opacity-60")}>
+                <div
+                  className={cx("flex w-[60%] max-w-[36px] flex-col-reverse gap-px transition-opacity", active !== null && active !== i && "opacity-60")}
+                >
                   {segs.map((s, si) => (
                     <div
                       key={s.decision}
-                      className={cx(si === segs.length - 1 && "rounded-t-[3px]")}
+                      className={cx(si === segs.length - 1 && "rounded-t-[4px]")}
                       style={{ height: `${(s.pct / 100) * height}px`, background: decisionColor[s.decision] }}
                     />
                   ))}
@@ -62,7 +63,7 @@ export function StackedBars({ days, height = 160 }: { days: DailyStat[]; height?
           <div
             className="pointer-events-none absolute z-10 w-36 -translate-x-1/2 rounded-md border border-line-2 bg-card p-2 text-[11px] shadow-none"
             style={{
-              left: `${Math.min(88, Math.max(12, ((active! + 0.5) / n) * 100))}%`,
+              left: `clamp(72px, ${((active! + 0.5) / n) * 100}%, calc(100% - 72px))`,
               bottom: `${Math.min(90, ((shown.allow + shown.challenge + shown.block) / axisMax) * 100 + 6)}%`,
             }}
           >
@@ -79,7 +80,7 @@ export function StackedBars({ days, height = 160 }: { days: DailyStat[]; height?
           </div>
         )}
       </div>
-      <div className={cx("mt-2 flex", dense ? "gap-[3px]" : "gap-2")}>
+      <div className="mt-2 flex">
         {days.map((d) => (
           <span key={d.date} className="min-w-0 flex-1 text-center font-mono text-[10px] text-faint">
             {weekdayLetter(d.date)}

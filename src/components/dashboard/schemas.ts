@@ -1,6 +1,12 @@
 // Server-side validation for dashboard forms. Pure, so it is unit-tested.
 import { z } from "zod";
 
+/** "0.285" is rejected upstream; this converts a validated "12.34" string to cents without float math. */
+export function dollarsToCents(s: string): number {
+  const [whole, frac = ""] = s.split(".");
+  return Number(whole) * 100 + Number(frac.padEnd(2, "0"));
+}
+
 export const keyNameSchema = z.string().trim().min(1, "Give the key a name").max(60, "Keep it under 60 characters");
 
 const num = (label: string) =>
@@ -14,7 +20,11 @@ const num = (label: string) =>
 const settingsSchema = z
   .object({
     name: z.string().trim().min(1, "Project name is required").max(60, "Keep it under 60 characters"),
-    creditDollars: num("Free credits").pipe(z.number().min(0, "Cannot be negative").max(10_000, "That seems too high")),
+    creditDollars: z
+      .string()
+      .trim()
+      .regex(/^\d+(\.\d{1,2})?$/, "Use dollars and cents, like 0.50")
+      .refine((s) => dollarsToCents(s) <= 1_000_000, "That seems too high"),
     challenge: num("Challenge threshold").pipe(z.number().int("Use a whole number").min(0, "Use 0-100").max(100, "Use 0-100")),
     block: num("Block threshold").pipe(z.number().int("Use a whole number").min(0, "Use 0-100").max(100, "Use 0-100")),
   })
@@ -43,7 +53,7 @@ export function parseSettings(input: Record<string, unknown>): SettingsParse {
       ok: true,
       values: {
         name: r.data.name,
-        credit_value_cents: Math.round(r.data.creditDollars * 100),
+        credit_value_cents: dollarsToCents(r.data.creditDollars),
         challenge_threshold: r.data.challenge,
         block_threshold: r.data.block,
       },

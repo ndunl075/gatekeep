@@ -22,7 +22,7 @@ export function CreateKeyForm() {
         <Card className="border-allow/40 p-4">
           <MonoLabel>New key · {state.name}</MonoLabel>
           <div className="mt-2 flex flex-wrap items-center gap-2">
-            <code className="min-w-0 flex-1 select-all break-all rounded-md border border-line bg-[#0e0e10] px-3 py-2 font-mono text-[12px] text-ink">
+            <code className="min-w-0 flex-1 select-all break-all rounded-md border border-line bg-canvas px-3 py-2 font-mono text-[12px] text-ink">
               {state.plaintext}
             </code>
             <CopyButton value={state.plaintext} />

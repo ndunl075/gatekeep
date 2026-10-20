@@ -3,6 +3,7 @@ import { Search } from "lucide-react";
 import { AppContent } from "@/components/ui/app-window";
 import { Button, Input, PageTitle, Panel, Segmented, buttonClass } from "@/components/ui";
 import { ChecksTable } from "@/components/dashboard/checks-table";
+import { parseBefore } from "@/components/dashboard/helpers";
 import { getCurrentProject } from "@/lib/session";
 import { getStore } from "@/lib/store";
 import type { Decision } from "@/lib/types";
@@ -18,13 +19,13 @@ const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) 
 export default async function ChecksPage({
   searchParams,
 }: {
-  searchParams: Promise<{ decision?: string; q?: string; before?: string }>;
+  searchParams: Promise<{ decision?: string; q?: string; search?: string; before?: string }>;
 }) {
   const sp = await searchParams;
   const filter: Filter = FILTERS.includes(one(sp.decision) as Filter) ? (one(sp.decision) as Filter) : "all";
-  const q = one(sp.q).trim().slice(0, 100);
+  const q = (one(sp.q) || one(sp.search)).trim().slice(0, 100);
   const beforeRaw = one(sp.before);
-  const before = beforeRaw && !Number.isNaN(Date.parse(beforeRaw)) ? beforeRaw : undefined;
+  const before = parseBefore(beforeRaw);
 
   const project = await getCurrentProject();
   const rows = await getStore().listChecks(project.id, {
