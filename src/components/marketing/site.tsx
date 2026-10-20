@@ -139,13 +139,20 @@ export function SiteFooter() {
             ))}
           </div>
         </div>
-        <div
-          aria-hidden
-          className="mt-8 select-none whitespace-nowrap text-center text-[16.5vw] font-black uppercase leading-[0.8] tracking-[-0.04em] text-raised sm:text-[14.5vw] min-[1320px]:text-[190px]"
-          style={{ marginBottom: "-0.12em" }}
-        >
-          gatekeep
-        </div>
+        <svg aria-hidden viewBox="0 0 1000 190" className="mt-10 block w-full select-none pb-5 sm:pb-8">
+          <text
+            x="0"
+            y="165"
+            textLength="1000"
+            lengthAdjust="spacingAndGlyphs"
+            fontSize="220"
+            fontWeight="900"
+            fill="var(--color-ink-2)"
+            style={{ fontFamily: "var(--font-inter), Inter, system-ui, sans-serif" }}
+          >
+            GATEKEEP
+          </text>
+        </svg>
       </div>
       <p className="mt-3 text-center text-[11px] text-white/50">gatekeep. Made for solo builders.</p>
     </footer>

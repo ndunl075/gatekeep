@@ -1,5 +1,5 @@
 import { Check } from "lucide-react";
-import { Card, ButtonLink, MonoLabel, cx } from "@/components/ui";
+import { Card, ButtonLink, cx } from "@/components/ui";
 import { PLANS, PLAN_ORDER } from "@/lib/plans";
 
 const fmt = (n: number) => n.toLocaleString("en-US");
@@ -7,10 +7,12 @@ const fmt = (n: number) => n.toLocaleString("en-US");
 const POINTS: Record<string, string[]> = {
   free: ["Every check and signal", "Dashboard and check log", "No card needed"],
   pro: ["Everything in Free", "Room for a real launch", "Cancel anytime"],
-  scale: ["Everything in Pro", "10x the Pro checks", "Cancel anytime"],
+  scale: ["Everything in Pro", `${PLANS.scale.checksPerMonth / PLANS.pro.checksPerMonth}x the Pro checks`, "Cancel anytime"],
 };
 
 export function PlanCards({ detailed = false }: { detailed?: boolean }) {
+  // Plan names are h2 on /pricing, h3 under the landing page section heading.
+  const Heading = detailed ? "h2" : "h3";
   return (
     <div className="grid gap-3 md:grid-cols-3">
       {PLAN_ORDER.map((id) => {
@@ -21,7 +23,7 @@ export function PlanCards({ detailed = false }: { detailed?: boolean }) {
             key={id}
             className={cx("flex flex-col p-5 sm:p-6", featured && "border-line-2 bg-panel")}
           >
-            <MonoLabel>{p.name}</MonoLabel>
+            <Heading className="font-mono text-[10px] uppercase tracking-[0.14em] text-faint">{p.name}</Heading>
             <div className="mt-4 flex items-baseline gap-1.5">
               <span className="tabular text-[44px] font-light leading-none tracking-tight text-ink">${p.priceMonthly}</span>
               <span className="text-[13px] text-muted">/ month</span>

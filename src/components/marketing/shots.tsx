@@ -1,9 +1,9 @@
 // Static product shots for the landing page. Built from the real UI primitives and demo data,
 // no store access, so the page can be rendered statically.
-import { AtSign, Cpu, Globe, ShieldCheck, Users } from "lucide-react";
+import { ArrowLeft, AtSign, Cpu, Globe } from "lucide-react";
 import type { ReactNode } from "react";
 import { AppWindow } from "@/components/ui/app-window";
-import { Card, DecisionBadge, MonoLabel, Panel, PanelHeader, StatCard, buttonClass, cx, decisionColor } from "@/components/ui";
+import { Card, DecisionBadge, MonoLabel, Panel, PanelHeader, StatCard, cx, decisionColor } from "@/components/ui";
 import { DEMO_PROJECT_ID, generateDemoChecks } from "@/lib/demo";
 import type { DailyStat, Decision } from "@/lib/types";
 
@@ -55,7 +55,7 @@ export function OverviewShot() {
   return (
     <AppWindow active="overview" framed linkTabs={false}>
       <ShotBody>
-        <h3 className="text-[22px] font-light leading-tight tracking-tight text-ink sm:text-[28px]">Good evening, Maya</h3>
+        <p className="text-[22px] font-light leading-tight tracking-tight text-ink sm:text-[28px]">Good evening, Maya</p>
         <p className="mb-4 mt-1 text-[12px] text-muted sm:mb-5 sm:text-[13px]">
           Last 14 days: {fmt(blocked)} throwaway signups blocked, {fmt(challenged)} sent to a challenge.
         </p>
@@ -113,7 +113,7 @@ export function MapShot() {
   return (
     <AppWindow active="overview" framed linkTabs={false}>
       <ShotBody>
-        <h3 className="text-[22px] font-light leading-tight tracking-tight text-ink sm:text-[28px]">Your map</h3>
+        <p className="text-[22px] font-light leading-tight tracking-tight text-ink sm:text-[28px]">Your map</p>
         <p className="mb-4 mt-1 text-[12px] leading-relaxed text-muted sm:text-[13px]">
           Today gatekeep read 412 signups. 31 were blocked and 11 wait for a phone or card check.
         </p>
@@ -187,7 +187,7 @@ function KV({ k, v, mono }: { k: string; v: ReactNode; mono?: boolean }) {
   );
 }
 
-/** Check-detail shot, in the layout of Dugg's Decisions screen. */
+/** Check-detail shot: key/value block and the signals behind the decision, like the real detail page. */
 export function CheckDetailShot() {
   const signals: [string, number, string][] = [
     ["email_reuse", 35, "nico@gmail.com already signed up 4 times"],
@@ -197,43 +197,31 @@ export function CheckDetailShot() {
   return (
     <AppWindow active="checks" framed linkTabs={false}>
       <ShotBody>
-        <div className="space-y-2">
-          <Card className="flex items-center gap-3 px-3.5 py-2.5 text-[12px]">
-            <ShieldCheck size={14} className="text-muted" />
-            <span className="flex-1 truncate text-ink-2">kenji.tanaka@northwind.io</span>
-            <span className="text-muted">allow</span>
-          </Card>
-          <Card className="p-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h3 className="truncate text-[16px] font-semibold tracking-tight text-ink">n.ico+7@gmail.com</h3>
-              <DecisionBadge decision="challenge" />
-            </div>
-            <div className="mt-3 border-t border-line pt-2">
-              <KV k="Score" v="55 of 100" />
-              <KV k="Normalized" v="nico@gmail.com" mono />
-              <KV k="IP" v="84.12.200.31" mono />
-              <KV k="Device" v="Safari on macOS" />
-              <KV k="Checked" v="31 ms" />
-            </div>
-            <MonoLabel className="mb-1.5 mt-4">Why</MonoLabel>
-            <ul className="space-y-1.5">
-              {signals.map(([id, pts, detail]) => (
-                <li key={id} className="flex items-start gap-2 text-[12px]">
-                  <span className="mt-0.5 shrink-0 rounded-[4px] border border-line bg-panel px-1.5 font-mono text-[10px] text-challenge">+{pts}</span>
-                  <span className="min-w-0 text-ink-2">{detail}</span>
-                </li>
-              ))}
-            </ul>
-            <div className="mt-4 flex items-center gap-2">
-              <div className="h-8 min-w-0 flex-1 truncate rounded-[5px] border border-line-2 bg-[#111113] px-2.5 text-[13px] leading-8 text-faint">Ask about this...</div>
-              <span className={buttonClass("secondary")}>Allow</span>
-              <span className={buttonClass("primary")}>Block</span>
-            </div>
-          </Card>
-          <div className="flex items-center justify-center gap-2 pt-1 text-[11px] text-muted">
-            <Users size={12} /> 2 of 3 waiting
-          </div>
+        <div className="mb-3 flex items-center gap-1.5 text-[12px] text-muted">
+          <ArrowLeft size={13} /> Back to checks
         </div>
+        <Card className="p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="truncate text-[16px] font-semibold tracking-tight text-ink">n.ico+7@gmail.com</p>
+            <DecisionBadge decision="challenge" />
+          </div>
+          <div className="mt-3 border-t border-line pt-2">
+            <KV k="Score" v="55 of 100" />
+            <KV k="Normalized" v="nico@gmail.com" mono />
+            <KV k="IP" v="84.12.200.31" mono />
+            <KV k="Device" v="Safari on macOS" />
+            <KV k="Checked" v="31 ms" />
+          </div>
+          <MonoLabel className="mb-1.5 mt-4">Why</MonoLabel>
+          <ul className="space-y-1.5">
+            {signals.map(([id, pts, detail]) => (
+              <li key={id} className="flex items-start gap-2 text-[12px]">
+                <span className="mt-0.5 shrink-0 rounded-[4px] border border-line bg-panel px-1.5 font-mono text-[10px] text-challenge">+{pts}</span>
+                <span className="min-w-0 text-ink-2">{detail}</span>
+              </li>
+            ))}
+          </ul>
+        </Card>
       </ShotBody>
     </AppWindow>
   );

@@ -22,33 +22,39 @@ const ENDPOINT = `${env.appUrl}/api/v1/check`;
 
 const snippets = {
   clerk: `// app/api/webhooks/clerk/route.ts  (event: user.created)
-const user = evt.data;
+// A webhook has no end-user IP, so send the email only.
+// For IP and device checks, call gatekeep from your sign-up form's server route instead.
+const email = evt.data.email_addresses[0].email_address;
 const res = await fetch("${ENDPOINT}", {
   method: "POST",
   headers: { Authorization: \`Bearer \${process.env.GATEKEEP_KEY}\`, "Content-Type": "application/json" },
-  body: JSON.stringify({ email: user.email_addresses[0].email_address, ip, user_agent }),
-});
-const { decision } = await res.json();
-if (decision === "block") await clerkClient.users.deleteUser(user.id);`,
+  body: JSON.stringify({ email }),
+  signal: AbortSignal.timeout(1500),
+}).catch(() => null);
+const { decision } = res?.ok ? await res.json() : { decision: "allow" };
+if (decision === "block") await clerkClient.users.banUser(evt.data.id);
+if (decision === "challenge")
+  await clerkClient.users.updateUserMetadata(evt.data.id, { publicMetadata: { gatekeep: "challenge" } });`,
   supabase: `// Supabase Edge Function, called from your signup form
 const { email } = await req.json();
 const res = await fetch("${ENDPOINT}", {
   method: "POST",
   headers: { Authorization: \`Bearer \${Deno.env.get("GATEKEEP_KEY")}\`, "Content-Type": "application/json" },
   body: JSON.stringify({ email, ip: req.headers.get("x-forwarded-for"), user_agent: req.headers.get("user-agent") }),
-});
-const { decision } = await res.json();
+  signal: AbortSignal.timeout(1500),
+}).catch(() => null);
+const { decision } = res?.ok ? await res.json() : { decision: "allow" };
 if (decision === "block") return new Response("Signup blocked", { status: 403 });`,
   nextauth: `// auth.ts
 callbacks: {
-  async signIn({ user, account }) {
-    if (account?.provider !== "email" && !user.email) return true;
+  async signIn({ user }) {
     const res = await fetch("${ENDPOINT}", {
       method: "POST",
       headers: { Authorization: \`Bearer \${process.env.GATEKEEP_KEY}\`, "Content-Type": "application/json" },
       body: JSON.stringify({ email: user.email }),
-    });
-    const { decision } = await res.json();
+      signal: AbortSignal.timeout(1500),
+    }).catch(() => null);
+    const { decision } = res?.ok ? await res.json() : { decision: "allow" };
     return decision !== "block";
   },
 },`,
@@ -57,7 +63,7 @@ callbacks: {
 const faq = [
   {
     q: "Doesn't Clerk, Arcjet or Fingerprint do this?",
-    a: "They do parts of it. Clerk blocks some disposable domains, Arcjet does email validation and rate limits, Fingerprint identifies devices. gatekeep puts those signals in one call: five minutes to set up, priced for solo builders, and it works with any auth.",
+    a: "They each cover part of this: email validation, rate limits, device identification. gatekeep puts the signup signals in one call: five minutes to set up, priced for solo builders, and it works with any auth.",
   },
   {
     q: "What happens if gatekeep is down?",
@@ -69,7 +75,7 @@ const faq = [
   },
   {
     q: "What do you store?",
-    a: "The email, IP, user agent and the decision for each check, so the dashboard can show them to you. API keys are stored as hashes.",
+    a: "For each check: the email, IP, user agent, device_id and name you send, the signals and the decision, so the dashboard can show them to you. API keys are stored as hashes.",
   },
   {
     q: "How is est. credits saved calculated?",
@@ -77,7 +83,7 @@ const faq = [
   },
   {
     q: "What happens when I pass my monthly checks?",
-    a: "Checks keep working and still fail open. The response includes quota_exceeded and we email you so you can upgrade.",
+    a: "Checks keep working and still fail open. The response includes quota_exceeded, and the dashboard shows your usage so you can upgrade.",
   },
 ];
 
@@ -88,11 +94,12 @@ export default function Home() {
         <div className="relative z-10">
           <SiteHeader />
 
-          <section className="mx-auto max-w-[1000px] px-4 pb-16 pt-14 text-center sm:px-8 sm:pt-24">
+          <section className="relative mx-auto max-w-[1000px] px-4 pb-16 pt-14 text-center sm:px-8 sm:pt-24">
+            <div aria-hidden className="pointer-events-none absolute inset-x-0 top-1/4 -z-10 mx-auto h-[420px] max-w-[760px] rounded-full bg-black/35 blur-3xl" />
             <Headline as="h1" className="text-[46px] leading-[1.04] sm:text-[72px] lg:text-[84px]">
               Your free tier is getting farmed.
             </Headline>
-            <p className="mx-auto mt-6 max-w-[560px] text-balance text-[16px] leading-relaxed text-ink-2 sm:text-[18px]">
+            <p className="mx-auto mt-6 max-w-[560px] text-balance text-[16px] leading-relaxed text-ink sm:text-[18px]">
               People make 20 throwaway accounts for your free credits and burn your OpenAI bill. gatekeep checks every signup with one call.
             </p>
             <div className="mt-9 flex flex-wrap items-center justify-center gap-3">
@@ -111,7 +118,7 @@ export default function Home() {
             <div className="mx-auto mb-12 max-w-[760px] text-center">
               <Headline className="text-[38px] leading-[1.05] sm:text-[56px]">Watch it work.</Headline>
               <p className="mt-5 text-[16px] leading-relaxed text-ink-2">
-                Every signup takes the same path: read the email, IP and user agent, run the checks, return a decision. About 100,000 disposable domains, Gmail dot and plus tricks, missing mail servers, and the same IP or device making 3 or more accounts in 24 hours.
+                Every signup takes the same path: read the email, IP and user agent, run the checks, return a decision. About 100,000 disposable domains, Gmail dot and plus tricks, missing mail servers, and the same IP or device making 3 or more signups in 24 hours.
               </p>
             </div>
             <MapShot />
@@ -164,7 +171,7 @@ export default function Home() {
 
           <SplitSection
             id="setup"
-            title="Five minutes, three lines."
+            title="Five minutes, one call."
             body="Drop-in snippets for Clerk, Supabase Auth and NextAuth. If gatekeep is ever down, the call returns allow and your signups keep working."
           >
             <IntegrationTabs endpoint={ENDPOINT} snippets={snippets} />

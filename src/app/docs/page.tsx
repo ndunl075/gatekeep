@@ -6,10 +6,11 @@ import { PLANS } from "@/lib/plans";
 
 const ENDPOINT = `${env.appUrl}/api/v1/check`;
 
-function Section({ id, title, children }: { id: string; title: string; children: ReactNode }) {
+function Section({ id, title, children, h1 = false }: { id: string; title: string; children: ReactNode; h1?: boolean }) {
+  const Tag = h1 ? "h1" : "h2";
   return (
     <section id={id} className="scroll-mt-6 border-t border-line py-10 first:border-t-0 first:pt-0">
-      <h2 className="mb-4 text-[26px] font-light tracking-tight text-ink">{title}</h2>
+      <Tag className="mb-4 text-[26px] font-light tracking-tight text-ink">{title}</Tag>
       <div className="space-y-4 text-[14px] leading-relaxed text-ink-2">{children}</div>
     </section>
   );
@@ -53,7 +54,7 @@ const mono = (t: string) => <span className="font-mono text-[12px] text-ink">{t}
 export default function DocsPage() {
   return (
     <article>
-      <Section id="overview" title="API reference">
+      <Section id="overview" title="API reference" h1>
         <p>
           gatekeep has one endpoint. Call it when someone signs up, and it returns <C>allow</C>, <C>challenge</C> or <C>block</C>, plus a score from 0 to 100 and the reason. You decide what to do with the answer.
         </p>
@@ -158,7 +159,7 @@ export default function DocsPage() {
           ]}
         />
         <p>
-          Normalization: lowercase, <C>googlemail.com</C> becomes <C>gmail.com</C>, Gmail dots and +tags are removed, and +tags are removed for Outlook, Hotmail, Live, iCloud, Proton and Fastmail.
+          Normalization: lowercase, <C>googlemail.com</C> becomes <C>gmail.com</C>, Gmail dots and +tags are removed, +tags are removed for Outlook, Hotmail, Live, iCloud, me.com, Proton and Fastmail, and Yahoo&apos;s -tags are removed.
         </p>
       </Section>
 
@@ -210,7 +211,7 @@ const decision = res?.ok ? (await res.json()).decision : "allow";`}</Code>
 
       <Section id="quota" title="Quota">
         <p>
-          Plans include {PLANS.free.checksPerMonth.toLocaleString("en-US")} (Free), {PLANS.pro.checksPerMonth.toLocaleString("en-US")} (Pro) or {PLANS.scale.checksPerMonth.toLocaleString("en-US")} (Scale) checks a month. Over that, checks still run and still fail open, the response gets <C>quota_exceeded: true</C>, and we email you. See{" "}
+          Plans include {PLANS.free.checksPerMonth.toLocaleString("en-US")} (Free), {PLANS.pro.checksPerMonth.toLocaleString("en-US")} (Pro) or {PLANS.scale.checksPerMonth.toLocaleString("en-US")} (Scale) checks a month. Over that, checks still run and still fail open, the response gets <C>quota_exceeded: true</C>, and the dashboard shows your usage. See{" "}
           <Link href="/pricing" className="text-ink underline decoration-line-2 underline-offset-4 hover:decoration-ink">
             pricing
           </Link>

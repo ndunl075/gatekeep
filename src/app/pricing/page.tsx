@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Card, MonoLabel } from "@/components/ui";
+import { Card } from "@/components/ui";
 import { PLANS } from "@/lib/plans";
 import { Faq } from "@/components/marketing/faq";
 import { PlanCards } from "@/components/marketing/pricing";
@@ -18,7 +18,7 @@ const faq = [
   },
   {
     q: "What happens if I go over my monthly checks?",
-    a: "Nothing breaks. Checks keep working and fail open, the response carries quota_exceeded: true, and we email you so you can upgrade. Your signups are never blocked because of a bill.",
+    a: "Nothing breaks. Checks keep working and fail open, the response carries quota_exceeded: true, and the dashboard shows your usage so you can upgrade. Your signups are never blocked because of a bill.",
   },
   {
     q: "Can I cancel?",
@@ -50,21 +50,22 @@ export default function PricingPage() {
 
             <div className="mt-3 grid gap-3 md:grid-cols-2">
               <Card className="p-5">
-                <MonoLabel>What counts as a check</MonoLabel>
+                <h2 className="font-mono text-[10px] uppercase tracking-[0.14em] text-faint">What counts as a check</h2>
                 <p className="mt-3 text-[14px] leading-relaxed text-ink-2">
                   Each call to the check endpoint, with a valid key, is one check. Allow, challenge and block all count the same. Looking at the dashboard does not.
                 </p>
               </Card>
               <Card className="p-5">
-                <MonoLabel>Over your quota</MonoLabel>
+                <h2 className="font-mono text-[10px] uppercase tracking-[0.14em] text-faint">Over your quota</h2>
                 <p className="mt-3 text-[14px] leading-relaxed text-ink-2">
-                  Checks keep working and fail open. The response says <span className="font-mono text-[12px]">quota_exceeded</span> and we email you. No signup is lost.
+                  Checks keep working and fail open. The response says <span className="font-mono text-[12px]">quota_exceeded</span> and the dashboard shows your usage. No signup is lost.
                 </p>
               </Card>
             </div>
           </div>
 
           <section className="mx-auto w-full max-w-[760px] px-4 py-20 sm:px-8">
+            <h2 className="mb-6 text-center text-[32px] font-light tracking-tight text-ink sm:text-[40px]">Questions.</h2>
             <Faq items={faq} />
             <div className="mt-12 text-center">
               <CtaLink href="/dashboard/billing">Choose a plan</CtaLink>
