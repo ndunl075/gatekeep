@@ -22,6 +22,26 @@ describe("disposable list data", () => {
   });
 });
 
+describe("regression: real consumer providers and shared suffixes are not disposable", () => {
+  const providers = [
+    "21cn.com", "tom.com", "123.com", "158.com", "mail.by", "duck.com", "simplelogin.com", "keemail.me",
+    "sina.com", "sohu.com", "126.com", "yeah.net", "aliyun.com", "rambler.ru", "seznam.cz", "wp.pl", "o2.pl",
+    "interia.pl", "laposte.net", "free.fr", "sfr.fr", "virgilio.it", "rediffmail.com", "daum.net", "hanmail.net",
+    "nate.com", "yahoo.co.jp", "rocketmail.com", "ymail.com", "protonmail.ch", "pm.me", "tutanota.com", "tuta.io",
+    "mailbox.org", "posteo.de", "privaterelay.appleid.com",
+  ];
+  it.each(providers)("%s", (d) => {
+    expect(isDisposableDomain(d)).toBe(false);
+  });
+  it.each(["ddns.net", "hopto.org", "dyndns.org", "no-ip.org", "duckdns.org", "mooo.com", "dynu.net"])(
+    "dynamic DNS parent %s and its subdomains",
+    (d) => {
+      expect(isDisposableDomain(d)).toBe(false);
+      expect(isDisposableDomain(`mail.acme.${d}`)).toBe(false);
+    },
+  );
+});
+
 describe("matchDisposable", () => {
   it("matches listed domains", () => {
     expect(matchDisposable("mailinator.com")).toBe("mailinator.com");

@@ -27,8 +27,10 @@ describe("normalizeEmail", () => {
     ["j.smith@company.io", "j.smith@company.io", {}],
     ["USER@Sub.Example.CO.UK", "user@sub.example.co.uk", {}],
     ["o'brien@example.ie", "o'brien@example.ie", {}],
-    ["münchen@bücher.de", "münchen@bücher.de", {}],
-    ["用户@例子.中国", "用户@例子.中国", {}],
+    ["münchen@bücher.de", "münchen@xn--bcher-kva.de", {}],
+    ["Jörg@MÜNCHEN.de", "jörg@xn--mnchen-3ya.de", {}],
+    ["jörg@xn--mnchen-3ya.de", "jörg@xn--mnchen-3ya.de", {}],
+    ["用户@例子.中国", "用户@xn--fsqu00a.xn--fiqs8s", {}],
   ];
   it.each(cases)("%s → %s", (input, normalized, flags) => {
     const r = normalizeEmail(input);
@@ -36,6 +38,13 @@ describe("normalizeEmail", () => {
     expect(r?.plusAlias).toBe(!!flags.plus);
     expect(r?.dotAlias).toBe(!!flags.dot);
     expect(r?.normalized).toBe(`${r?.local}@${r?.domain}`);
+  });
+
+  it("dedupes IDN domains in Unicode and punycode form", () => {
+    const a = normalizeEmail("x@münchen.de");
+    const b = normalizeEmail("x@xn--mnchen-3ya.de");
+    expect(a).toEqual(b);
+    expect(a?.domain).toBe("xn--mnchen-3ya.de");
   });
 
   it("maps googlemail.com to gmail.com", () => {
@@ -57,6 +66,8 @@ describe("normalizeEmail", () => {
     "nico@gmail-.com",
     "nico@gmail.c",
     "nico@1.2.3.4",
+    "nico@exa_mple.com",
+    "nico@xn--.com",
     "nico@[1.2.3.4]",
     ".nico@gmail.com",
     "nico.@gmail.com",

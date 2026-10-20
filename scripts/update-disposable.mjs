@@ -22,6 +22,17 @@ yandex.com yandex.ru mail.ru bk.ru inbox.ru list.ru rambler.ru qq.com 163.com 12
 comcast.net verizon.net att.net sbcglobal.net bellsouth.net cox.net charter.net earthlink.net optonline.net btinternet.com
 orange.fr free.fr wanadoo.fr laposte.net sfr.fr libero.it virgilio.it tiscali.it seznam.cz wp.pl o2.pl interia.pl onet.pl
 rediffmail.com shaw.ca rogers.com sympatico.ca bigpond.com telus.net
+21cn.com tom.com 123.com 158.com mail.by sina.cn yeah.net aliyun.com 139.com 189.cn foxmail.com nate.com yahoo.co.jp
+protonmail.ch tutanota.de keemail.me mailbox.org posteo.de posteo.net runbox.com hushmail.com startmail.com
+duck.com simplelogin.com simplelogin.co anonaddy.com anonaddy.me privaterelay.appleid.com ukr.net i.ua abv.bg
+centrum.cz email.cz post.cz onet.pl op.pl poczta.fm tlen.pl
+`.split(/\s+/).filter(Boolean));
+
+// Shared dynamic-DNS / free-subdomain suffixes. The engine matches parent domains, so listing one of these
+// would flag every host under it (including real companies' mail servers). Never list them.
+const ALLOW_PARENTS = new Set(`
+ddns.net hopto.org dyndns.org no-ip.org no-ip.com duckdns.org myftp.org zapto.org servebeer.com serveftp.com
+sytes.net hopto.me dynu.net ddnsking.com 3utilities.com bounceme.net redirectme.net mooo.com
 `.split(/\s+/).filter(Boolean));
 
 function lines(text) {
@@ -53,7 +64,7 @@ for (const s of SOURCES) {
     console.error(`${s.name}: skipped (${e.message})`);
   }
 }
-for (const a of ALLOW) all.delete(a);
+for (const a of [...ALLOW, ...ALLOW_PARENTS]) all.delete(a);
 if (all.size < 10_000) {
   console.error(`only ${all.size} domains collected; refusing to overwrite the bundled list`);
   process.exit(1);

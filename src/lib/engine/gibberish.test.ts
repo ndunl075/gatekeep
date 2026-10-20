@@ -8,7 +8,7 @@ const REAL_NAMES = [
   "Muhammad", "Abdulrahman", "Fitzgerald", "O'Brien", "Zsolt", "Csonka", "Tsvangirai", "Vsevolod",
   "Mthembu", "Mnangagwa", "Nkrumah", "Rhys", "Ahtisaari", "Admir", "Kjeldsen", "Sjöberg", "Åkesson",
   "Łukasz", "Müller", "Guðmundsson", "Hồ Chí Minh", "Jean-Baptiste", "Mary Jane Watson", "Christopher Strength",
-  "Wlodzimierz", "Pniewski", "Mrozek", "Bzdyl", "Tlingit", "Thorsten Wertheimer", "Ewert Stewart",
+  "Nhlanhla", "Kalikali", "Bongani", "Thandiwe", "Lalala", "Wertz", "Wertzberger", "Wertzel", "Wlodzimierz", "Pniewski", "Mrozek", "Bzdyl", "Tlingit", "Thorsten Wertheimer", "Ewert Stewart",
   "田中太郎", "Иван Петров", "محمد", "Kowalczyk", "Papadopoulos", "Ghosh", "Bhattacharya",
 ];
 
@@ -17,7 +17,7 @@ const REAL_LOCALS = [
   "llewellyn.jones", "bjorn.andersen", "oyelaran-oyeyinka", "john.doe1985", "jane_doe", "alex", "sam.w",
   "mike19850612", "maria.garcia", "dr.schmidt", "szczepanski.k", "a.kowalski", "wojciechowski",
   "info", "support", "hello", "contact", "admin", "noreply", "team", "sales", "jsmith", "k.nkemelu",
-  "ndlovu.t", "ahmed.hassan", "li.ng", "ng", "tom", "priya.sharma07", "emma_watson", "chris.p.bacon",
+  "ndlovu.t", "ahmed.hassan", "nhlanhla.dube", "bongani", "wertz", "wertzberger.k", "kalikali", "li.ng", "ng", "tom", "priya.sharma07", "emma_watson", "chris.p.bacon",
   "krzysztof.kielowski", "przybylski", "gbadamosi.o", "khachaturian.a", "yuki.tanaka", "carlos.rodriguez",
   "user123", "test", "demo", "a1b2", "john+newsletter", "xyz", "mr.strength",
   "christopher.hrynchyshyn", "mthembu.zodwa", "wertheimer", "stewart.ewert",
@@ -27,7 +27,7 @@ const MASH = [
   "asdfgh", "xkqzvbt", "qwertyuiop", "zxcvbn123", "jfkdlsa", "asdfasdf", "qweqwe", "dfghjk", "kjhgfd",
   "lkjhgf", "mnbvcx", "xzcvbnm", "aaaaaa", "ababababab", "hjklhjkl", "sdkjfhsd", "kjsdhfkjs", "wqrtpsdfg",
   "bcdfghjk", "zzzzzz", "qazwsx", "1qaz2wsx", "plmokn", "poiuyt", "asdkjh", "fghfgh", "vbnmvbnm",
-  "ghjkghjk", "xxxxxxxx", "rtyfghvbn", "qwerty", "asdfghjkl", "zxcvbnm", "yxcvbnm", "azertyuiop",
+  "ghjkghjk", "xxxxxxxx", "rtyfghvbn", "qwerty", "asdfghjkl", "zxcvbnm", "yxcvbnm", "azertyuiop", "qwertzuiop", "azerty", "qwertz",
 ];
 
 describe("gibberishEmailLocal", () => {

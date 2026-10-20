@@ -1,8 +1,10 @@
 // Email syntax validation and provider-aware normalization. Pure, no I/O.
+import { domainToASCII } from "node:url";
 
 export interface NormalizedEmail {
   /** `local@domain` after alias stripping, lowercased. Used as the dedupe key. */
   normalized: string;
+  /** ASCII (punycode) form, so `münchen.de` and `xn--mnchen-3ya.de` are the same domain. */
   domain: string;
   local: string;
   plusAlias: boolean;
@@ -61,7 +63,8 @@ export function parseEmail(email: string): ParsedEmail | null {
   const at = raw.lastIndexOf("@");
   if (at < 1 || at === raw.length - 1) return null;
   let local = raw.slice(0, at);
-  let domain = raw.slice(at + 1);
+  // domainToASCII lowercases, converts IDN to punycode and returns "" for anything it cannot parse.
+  let domain = domainToASCII(raw.slice(at + 1));
   if (local.length > MAX_LOCAL || local.includes("@") || !LOCAL_RE.test(local) || !validDomain(domain)) return null;
 
   let plusAlias = false;

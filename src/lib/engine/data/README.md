@@ -1,7 +1,7 @@
 # Disposable domain list
 
 `disposable-domains.json` is a sorted, lowercased, deduplicated JSON array of disposable / throwaway email
-domains (about 98k). The engine loads it into a `Set` once per server instance and also matches parent domains
+domains (about 98k; real consumer providers and shared dynamic-DNS suffixes are allowlisted in the update script). The engine loads it into a `Set` once per server instance and also matches parent domains
 (`a.b.mailinator.com` matches `mailinator.com`).
 
 Regenerate with `node scripts/update-disposable.mjs` (needs network). The script merges the sources below, removes

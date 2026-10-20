@@ -28,6 +28,11 @@ export interface EngineResult {
   signals: Signal[];
   normalized_email: string;
   email_domain: string;
+  /**
+   * Set when a dependency failed and its signals were skipped (fail open): "mx_error", "counters_error".
+   * Engine-internal; the API can log it.
+   */
+  degraded?: string[];
 }
 
 const DAY = 86_400;
@@ -51,34 +56,37 @@ function keyPart(s: string): string {
  * Records (or, in dry-run, only reads) one counter. Always returns the count *including* the current check,
  * so a dry run scores exactly like the real call would. Counter failures degrade to "no signal".
  */
-async function tally(ctx: EngineContext, key: string, windowSec: number): Promise<number | null> {
+async function tally(ctx: EngineContext, key: string, windowSec: number, degraded: Set<string>): Promise<number | null> {
   try {
     const k = `gk:${ctx.projectId}:${key}`;
     return ctx.dryRun ? (await ctx.counters.count(k, windowSec)) + 1 : await ctx.counters.hit(k, windowSec);
   } catch {
+    degraded.add("counters_error");
     return null;
   }
 }
 
-async function burstCounts(ctx: EngineContext): Promise<{ recent: number; day: number } | null> {
+async function burstCounts(ctx: EngineContext, degraded: Set<string>): Promise<{ recent: number; day: number } | null> {
   try {
     const key = `gk:${ctx.projectId}:burst`;
     const [recent, day] = await Promise.all([
-      tally(ctx, "burst", BURST_WINDOW),
+      tally(ctx, "burst", BURST_WINDOW, degraded),
       ctx.counters.count(key, DAY),
     ]);
     if (recent === null) return null;
     // The 24h window must contain the 10 minute one; `day` may or may not include this check's own hit.
     return { recent, day: Math.max(day + (ctx.dryRun ? 1 : 0), recent) };
   } catch {
+    degraded.add("counters_error");
     return null;
   }
 }
 
-async function mx(ctx: EngineContext, domain: string): Promise<boolean | null> {
+async function mx(ctx: EngineContext, domain: string, degraded: Set<string>): Promise<boolean | null> {
   try {
     return await ctx.resolveMx(domain);
   } catch {
+    degraded.add("mx_error");
     return null;
   }
 }
@@ -103,16 +111,22 @@ export async function runChecks(input: CheckInput, ctx: EngineContext): Promise<
     };
   }
 
-  const ip = input.ip?.trim() ? keyPart(input.ip) : null;
-  const device = input.device_id?.trim() ? keyPart(input.device_id) : null;
+  // Callers are JSON from the wire: anything that is not a non-empty string counts as absent.
+  const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v : null);
+  const ipRaw = str(input.ip);
+  const deviceRaw = str(input.device_id);
+  const name = str(input.name);
+  const ip = ipRaw ? keyPart(ipRaw) : null;
+  const device = deviceRaw ? keyPart(deviceRaw) : null;
+  const degraded = new Set<string>();
 
   // Independent lookups run together: MX plus every counter.
   const [hasMx, ipCount, devCount, emailCount, burst] = await Promise.all([
-    mx(ctx, parsed.domain),
-    ip ? tally(ctx, `ip:${ip}`, DAY) : null,
-    device ? tally(ctx, `dev:${device}`, DAY) : null,
-    tally(ctx, `em:${parsed.normalized}`, REUSE_WINDOW),
-    burstCounts(ctx),
+    mx(ctx, parsed.domain, degraded),
+    ip ? tally(ctx, `ip:${ip}`, DAY, degraded) : null,
+    device ? tally(ctx, `dev:${device}`, DAY, degraded) : null,
+    tally(ctx, `em:${parsed.normalized}`, REUSE_WINDOW, degraded),
+    burstCounts(ctx, degraded),
   ]);
 
   const signals: Signal[] = [];
@@ -148,7 +162,7 @@ export async function runChecks(input: CheckInput, ctx: EngineContext): Promise<
   if (gibberishEmailLocal(parsed.displayLocal)) {
     add({ id: "gibberish_email", points: 25, detail: "Email name looks machine generated" });
   }
-  if (input.name && gibberishName(input.name)) {
+  if (name && gibberishName(name)) {
     add({ id: "gibberish_name", points: 20, detail: "Name looks like keyboard mash" });
   }
   if (parsed.plusAlias) {
@@ -170,5 +184,6 @@ export async function runChecks(input: CheckInput, ctx: EngineContext): Promise<
     signals,
     normalized_email: parsed.normalized,
     email_domain: parsed.domain,
+    ...(degraded.size ? { degraded: [...degraded].sort() } : {}),
   };
 }

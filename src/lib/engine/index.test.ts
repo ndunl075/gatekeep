@@ -363,3 +363,81 @@ describe("parallelism", () => {
     expect(order[0]).toBe("mx");
   });
 });
+
+describe("untrusted input types", () => {
+  it.each([
+    ["name", { name: 123 }],
+    ["ip", { ip: 5 }],
+    ["user_agent", { user_agent: 5 }],
+    ["device_id", { device_id: {} }],
+    ["all of them", { name: [], ip: 1, user_agent: false, device_id: 7 }],
+  ])("does not throw on non-string %s", async (_label, over) => {
+    const r = await runChecks(input(over as unknown as Partial<CheckInput>), ctx());
+    expect(r.score).toBeGreaterThanOrEqual(0);
+  });
+  it("treats a non-string user agent as missing and a non-string ip as absent", async () => {
+    const r = await runChecks(input({ user_agent: 5 as unknown as string, ip: 5 as unknown as string }), ctx());
+    expect(ids(r)).toEqual(["bot_user_agent"]);
+  });
+  it("non-string email is invalid", async () => {
+    expect((await runChecks(input({ email: 5 as unknown as string }), ctx())).decision).toBe("block");
+  });
+});
+
+describe("degraded", () => {
+  it("is absent when everything works", async () => {
+    expect("degraded" in (await runChecks(input(), ctx()))).toBe(false);
+  });
+  it("reports mx_error when resolveMx rejects", async () => {
+    resolveMx.mockRejectedValue(new Error("dns"));
+    const r = await runChecks(input(), ctx());
+    expect(r.degraded).toEqual(["mx_error"]);
+    expect(r.decision).toBe("allow");
+  });
+  it("a null MX answer is unknown, not degraded", async () => {
+    resolveMx.mockResolvedValue(null);
+    expect((await runChecks(input(), ctx())).degraded).toBeUndefined();
+  });
+  it("reports counters_error when counters reject", async () => {
+    const broken: Counters = {
+      hit: async () => {
+        throw new Error("redis");
+      },
+      count: async () => {
+        throw new Error("redis");
+      },
+    };
+    expect((await runChecks(input(), ctx({ counters: broken }))).degraded).toEqual(["counters_error"]);
+  });
+  it("reports both, sorted, in dryRun too", async () => {
+    resolveMx.mockRejectedValue(new Error("dns"));
+    const broken: Counters = {
+      hit: async () => {
+        throw new Error("x");
+      },
+      count: async () => {
+        throw new Error("x");
+      },
+    };
+    const r = await runChecks(input(), ctx({ counters: broken, dryRun: true }));
+    expect(r.degraded).toEqual(["counters_error", "mx_error"]);
+  });
+});
+
+describe("IDN domains", () => {
+  it("passes the punycode domain to resolveMx and uses it as the key and email_domain", async () => {
+    const r = await runChecks(input({ email: "jörg@münchen.de" }), ctx());
+    expect(resolveMx).toHaveBeenCalledWith("xn--mnchen-3ya.de");
+    expect(r.email_domain).toBe("xn--mnchen-3ya.de");
+    expect(r.normalized_email).toBe("jörg@xn--mnchen-3ya.de");
+  });
+  it("detects reuse across Unicode and punycode spellings", async () => {
+    await runChecks(input({ email: "jörg@münchen.de" }), ctx());
+    const r = await runChecks(input({ email: "jörg@xn--mnchen-3ya.de", ip: "6.6.6.6" }), ctx());
+    expect(ids(r)).toContain("email_reuse");
+  });
+  it("matches the disposable list on the ASCII form", async () => {
+    const r = await runChecks(input({ email: "x@MAILINATOR.com" }), ctx());
+    expect(ids(r)).toContain("disposable_domain");
+  });
+});

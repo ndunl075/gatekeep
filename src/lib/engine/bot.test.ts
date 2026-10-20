@@ -29,7 +29,11 @@ describe("botUserAgent", () => {
     "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
     "Mozilla/5.0 (compatible; bingbot/2.0)",
     "SomeSpider/1.0",
-    "MyCrawler 3.2",
+    "MyCrawler/3.2",
+    "Mozilla/5.0 (compatible; AhrefsBot/7.0; +http://ahrefs.com/robot/)",
+    "Mozilla/5.0 (compatible; ExampleFetcher/1.0; +https://example.com/info.html)",
+    "bot",
+    "web crawler v2",
   ])("flags %s", (ua) => {
     expect(botUserAgent(ua)).not.toBeNull();
     expect(botUserAgent(ua)).not.toBe("missing");
@@ -37,5 +41,19 @@ describe("botUserAgent", () => {
 
   it.each([CHROME, SAFARI_IOS])("allows real browsers", (ua) => {
     expect(botUserAgent(ua)).toBeNull();
+  });
+
+  it.each([
+    "Mozilla/5.0 (Linux; Android 11; CUBOT_X30) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 10; CUBOT KINGKONG 5 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 12; Abbott Libre) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64; rv:126.0) Gecko/20100101 Firefox/126.0 Bottega/1.0",
+    "Mozilla/5.0 (Linux; Android 13; Robotics Tab) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+  ])("does not flag real devices: %s", (ua) => {
+    expect(botUserAgent(ua)).toBeNull();
+  });
+
+  it.each([5, {}, [], true, NaN])("treats non-string %j as missing", (ua) => {
+    expect(botUserAgent(ua)).toBe("missing");
   });
 });
