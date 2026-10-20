@@ -6,7 +6,8 @@ switch each piece on when you have the keys.
 ## 1. Vercel (about 2 minutes)
 
 1. <https://vercel.com/new> → **Import** `ndunl075/gatekeep`. Framework is detected as Next.js; keep the defaults.
-2. Before the first deploy, add environment variables (**Settings → Environment Variables**, Production + Preview):
+2. Add environment variables (**Settings → Environment Variables**, Production + Preview). You only know the URL after
+   the first deploy, so deploy once, set `NEXT_PUBLIC_APP_URL`, then redeploy:
 
 | Variable | Value |
 |---|---|

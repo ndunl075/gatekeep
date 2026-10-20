@@ -151,7 +151,7 @@ export async function runChecks(input: CheckInput, ctx: EngineContext): Promise<
     add({
       id: "bot_user_agent",
       points: 30,
-      detail: bot === "missing" ? "User agent is missing" : `User agent looks automated (${bot})`,
+      detail: bot === "missing" ? "User agent is empty" : `User agent looks automated (${bot})`,
     });
   }
   if (burst && burst.recent >= BURST_MIN && burst.recent >= BURST_FACTOR * (burst.day / BUCKETS_PER_DAY)) {

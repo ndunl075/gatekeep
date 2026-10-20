@@ -87,7 +87,7 @@ export default function DocsPage() {
           rows={[
             [mono("email"), "string, required", "The address being signed up."],
             [mono("ip"), "string", "The end user's IP address. Powers the same-IP check."],
-            [mono("user_agent"), "string", "The end user's User-Agent header. Missing or script-like values add risk."],
+            [mono("user_agent"), "string", "The end user's User-Agent header. An empty or script-like value adds risk; leaving it out does not."],
             [mono("device_id"), "string", "A stable browser id from the gatekeep.js snippet. Powers the same-device check."],
             [mono("name"), "string", "The display name typed at signup. Used to spot keyboard mash."],
           ]}

@@ -181,7 +181,7 @@ describe("bot_user_agent", () => {
     }
   });
   it("says why", async () => {
-    expect((await runChecks(input({ user_agent: "" }), ctx())).reason).toBe("User agent is missing");
+    expect((await runChecks(input({ user_agent: "" }), ctx())).reason).toBe("User agent is empty");
     expect((await runChecks(input({ user_agent: "curl/8", ip: "7.7.7.7", email: "other.person@example.com" }), ctx())).reason).toBe(
       "User agent looks automated (curl)",
     );
@@ -281,7 +281,7 @@ describe("scoring", () => {
   });
   it("reason with a single signal has no separator", async () => {
     const r = await runChecks(input({ user_agent: "" }), ctx());
-    expect(r.reason).toBe("User agent is missing");
+    expect(r.reason).toBe("User agent is empty");
   });
 
   it("decides from thresholds: allow < challenge ≤ … < block", async () => {
