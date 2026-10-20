@@ -10,6 +10,9 @@ import type { Store } from "../store/types";
 import type { PlanId, Project } from "../types";
 import { planForPriceId } from "./stripe";
 import { LIVE_STATUSES } from "./statuses";
+import { listAllSubscriptions, type StripeSubscriptions } from "./subscriptions";
+
+export type { StripeSubscriptions };
 
 export interface ApplyResult {
   /** True when the event type is one we act on (even if it changed nothing). */
@@ -20,13 +23,8 @@ export interface ApplyResult {
   plan?: PlanId;
   /** Why nothing was written (or a note on what happened). */
   reason?: string;
-}
-
-/** The slice of the Stripe client the sync needs; tests pass a fake. */
-export interface StripeSubscriptions {
-  subscriptions: {
-    list(params: Stripe.SubscriptionListParams): PromiseLike<{ data: Stripe.Subscription[] }>;
-  };
+  /** Extra live subscriptions cancelled because the customer was paying twice. */
+  canceled?: string[];
 }
 
 type Ref = string | { id: string } | null | undefined;
@@ -117,7 +115,7 @@ export async function syncProjectBilling(
   stripe: StripeSubscriptions,
   store: Store,
 ): Promise<ApplyResult> {
-  const { data } = await stripe.subscriptions.list({ customer: customerId, status: "all", limit: 10 });
+  const data = await listAllSubscriptions(stripe, customerId);
   const best = pickBestSubscription(data);
 
   if (!best && data.some((s) => LIVE_STATUSES.has(s.status))) {
@@ -131,15 +129,45 @@ export async function syncProjectBilling(
     stripe_customer_id: customerId,
     stripe_subscription_id: best?.sub.id ?? null,
   };
-  if (
+  const same =
     project.plan === next.plan &&
     project.stripe_customer_id === next.stripe_customer_id &&
-    project.stripe_subscription_id === next.stripe_subscription_id
-  ) {
-    return { handled: true, changed: false, projectId: project.id, plan: next.plan, reason: "already up to date" };
+    project.stripe_subscription_id === next.stripe_subscription_id;
+  if (!same) await store.setBilling(project.id, next);
+
+  // Two live subscriptions means the customer is being charged twice (two Checkout tabs both completed).
+  // Keep the best one and cancel the rest. Extras with a price we do not know are left alone.
+  const canceled = await cancelExtras(stripe, data, best?.sub.id);
+  return {
+    handled: true,
+    changed: !same,
+    projectId: project.id,
+    plan: next.plan,
+    ...(canceled.length ? { canceled } : {}),
+    ...(same && !canceled.length ? { reason: "already up to date" } : {}),
+  };
+}
+
+async function cancelExtras(
+  stripe: StripeSubscriptions,
+  subs: Stripe.Subscription[],
+  keepId: string | undefined,
+): Promise<string[]> {
+  if (!keepId) return [];
+  const canceled: string[] = [];
+  for (const sub of subs) {
+    if (sub.id === keepId || !LIVE_STATUSES.has(sub.status) || !planFromSubscription(sub)) continue;
+    try {
+      // prorate: the unused part of the period is credited to the customer's balance (not refunded to the card).
+      await stripe.subscriptions.cancel(sub.id, { prorate: true });
+      console.warn("stripe webhook: cancelled duplicate subscription", sub.id, "kept", keepId);
+      canceled.push(sub.id);
+    } catch (err) {
+      // Already gone (another webhook got there first) is fine; anything else must fail the event so Stripe retries.
+      if ((err as { code?: string })?.code !== "resource_missing") throw err;
+    }
   }
-  await store.setBilling(project.id, next);
-  return { handled: true, changed: true, projectId: project.id, plan: next.plan };
+  return canceled;
 }
 
 /**

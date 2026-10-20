@@ -2,9 +2,10 @@
 import { env } from "../env";
 
 /**
- * CSRF guard for the form POST routes. Browsers send Origin on cross-site POSTs; if it is present it must be
- * this deployment. A missing Origin (curl, old browsers) is allowed. There is no session cookie yet (login lands in
- * the data-layer PR), so this check is the guard; keep it when auth arrives, alongside SameSite cookies.
+ * CSRF guard for the form POST routes. Sessions are cookie based, so a cross-site form could otherwise ride the
+ * user's login. Browsers send Origin on cross-site POSTs; if it is present it must be this deployment. A missing
+ * Origin (curl, old browsers) is allowed, since only a browser can attach the session cookie in the first place.
+ * Keep this check even though the auth cookies are SameSite=Lax.
  */
 export function isSameOrigin(req: Request): boolean {
   const origin = req.headers.get("origin");

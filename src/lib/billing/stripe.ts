@@ -4,6 +4,7 @@ import Stripe from "stripe";
 import { env, hasStripe, isDemoMode } from "../env";
 import { getStore } from "../store";
 import { BLOCKING_STATUSES } from "./statuses";
+import { listAllSubscriptions } from "./subscriptions";
 import type { Store } from "../store/types";
 import type { PlanId, Project } from "../types";
 
@@ -108,11 +109,35 @@ async function ensureCustomer(
   return customer.id;
 }
 
-/** Asks Stripe, not our database, whether the customer already has (or is starting) a subscription. */
-async function assertNoOpenSubscription(stripe: Stripe, customerId: string): Promise<void> {
-  const { data } = await stripe.subscriptions.list({ customer: customerId, status: "all", limit: 10 });
-  if (data.some((s) => BLOCKING_STATUSES.has(s.status))) {
+/**
+ * Asks Stripe, not our database, whether the customer already has (or is starting) a subscription, then expires any
+ * Checkout tab still open so two tabs can never both be paid. Throws resource_missing if the customer is gone.
+ */
+async function prepareExistingCustomer(stripe: Stripe, customerId: string): Promise<void> {
+  const subs = await listAllSubscriptions(stripe, customerId);
+  if (subs.some((s) => BLOCKING_STATUSES.has(s.status))) {
     throw new BillingError("already_subscribed", "This project already has a subscription. Use Manage or cancel.");
+  }
+  let startingAfter: string | undefined;
+  for (let page = 0; page < 10; page++) {
+    const res = await stripe.checkout.sessions.list({
+      customer: customerId,
+      status: "open",
+      limit: 100,
+      ...(startingAfter ? { starting_after: startingAfter } : {}),
+    });
+    for (const open of res.data) {
+      try {
+        await stripe.checkout.sessions.expire(open.id);
+      } catch (err) {
+        // Completed or expired a moment ago (a Stripe invalid request): nothing left to close.
+        // Anything else (network, API outage) could leave a second payable tab, so it fails the checkout.
+        if ((err as { type?: string })?.type !== "StripeInvalidRequestError") throw err;
+        console.warn("stripe checkout: could not expire open session", open.id);
+      }
+    }
+    if (!res.has_more || res.data.length === 0) break;
+    startingAfter = res.data[res.data.length - 1].id;
   }
 }
 
@@ -126,13 +151,8 @@ export async function createCheckoutSession(
   if (!isPaidPlan(plan)) throw new BillingError("bad_plan", "Pick Pro or Scale.");
   const price = priceIdForPlan(plan);
   if (!price) throw new BillingError("no_price", `No Stripe price is configured for the ${plan} plan.`);
-  // A second subscription would bill twice. Changing plans goes through the customer portal instead.
-  if (project.stripe_subscription_id) {
-    throw new BillingError("already_subscribed", "This project already has a subscription. Use Manage or cancel.");
-  }
 
   const store = deps.store ?? getStore();
-  if (project.stripe_customer_id) await assertNoOpenSubscription(stripe, project.stripe_customer_id);
   const appUrl = (deps.appUrl ?? env.appUrl).replace(/\/$/, "");
   const attrs = { project_id: project.id };
 
@@ -148,14 +168,34 @@ export async function createCheckoutSession(
     cancel_url: `${appUrl}/dashboard/billing`,
   });
 
-  let customerId = await ensureCustomer(stripe, project, store, deps.email);
+  // The stored customer may no longer exist in this Stripe account (e.g. test keys swapped for live ones).
+  // Whichever Stripe call first notices, forget it and start over with a fresh customer, once.
+  let customerId = project.stripe_customer_id;
+  let replaced = false;
+  const forgetCustomer = async () => {
+    await store.setBilling(project.id, { stripe_customer_id: null });
+    customerId = null;
+    replaced = true;
+  };
+
+  if (customerId) {
+    try {
+      await prepareExistingCustomer(stripe, customerId);
+    } catch (err) {
+      if (!isMissingResource(err)) throw err;
+      await forgetCustomer();
+    }
+  }
+  if (!customerId) {
+    customerId = await ensureCustomer(stripe, { ...project, stripe_customer_id: null }, store, deps.email, replaced);
+  }
+
   let session: Stripe.Checkout.Session;
   try {
     session = await stripe.checkout.sessions.create(build(customerId));
   } catch (err) {
-    // The stored customer no longer exists in this Stripe account (e.g. test keys swapped for live ones).
-    if (!project.stripe_customer_id || !isMissingResource(err)) throw err;
-    await store.setBilling(project.id, { stripe_customer_id: null });
+    if (replaced || !project.stripe_customer_id || !isMissingResource(err)) throw err;
+    await forgetCustomer();
     customerId = await ensureCustomer(stripe, { ...project, stripe_customer_id: null }, store, deps.email, true);
     session = await stripe.checkout.sessions.create(build(customerId));
   }

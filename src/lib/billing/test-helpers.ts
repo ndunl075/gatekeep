@@ -1,3 +1,4 @@
+import { vi } from "vitest";
 // Builders for Stripe webhook payloads in tests. Only the fields the handlers read are filled in.
 import type Stripe from "stripe";
 
@@ -43,4 +44,78 @@ export function stripeEvent(type: string, object: unknown): Stripe.Event {
     request: { id: null, idempotency_key: null },
     data: { object },
   } as unknown as Stripe.Event;
+}
+
+type AnySub = Record<string, unknown> & { id: string; status: string };
+type AnySession = { id: string; url: string; customer: string; status: string; price?: string };
+
+/**
+ * A stateful stand-in for the parts of the Stripe API billing uses. Lists are paginated like the real API
+ * (`pageSize` caps `limit`, `has_more` / `starting_after` work), so ">1 page" bugs show up.
+ */
+export function makeFakeStripe(pageSize = 100) {
+  const state = {
+    subs: [] as AnySub[],
+    sessions: [] as AnySession[],
+    customers: [] as { id: string }[],
+    missingCustomers: new Set<string>(),
+    nextId: 1,
+  };
+  const missing = (what: string) => Object.assign(new Error(`No such ${what}`), { code: "resource_missing", type: "StripeInvalidRequestError" });
+  const page = <T extends { id: string }>(rows: T[], params: { limit?: number; starting_after?: string }) => {
+    const size = Math.min(params.limit ?? 10, pageSize);
+    const from = params.starting_after ? rows.findIndex((r) => r.id === params.starting_after) + 1 : 0;
+    const data = rows.slice(from, from + size);
+    return { data, has_more: from + size < rows.length };
+  };
+  const checkCustomer = (id: string) => {
+    if (state.missingCustomers.has(id)) throw missing("customer");
+  };
+
+  const api = {
+    subscriptions: {
+      list: vi.fn(async (p: { customer: string; status?: string; limit?: number; starting_after?: string }) => {
+        checkCustomer(p.customer);
+        const rows = state.subs.filter((s) => (s.customer as string) === p.customer && (p.status === "all" || !p.status || s.status === p.status));
+        return page(rows, p);
+      }),
+      cancel: vi.fn(async (id: string) => {
+        const sub = state.subs.find((s) => s.id === id);
+        if (!sub) throw missing("subscription");
+        sub.status = "canceled";
+        return sub;
+      }),
+    },
+    checkout: {
+      sessions: {
+        list: vi.fn(async (p: { customer: string; status?: string; limit?: number; starting_after?: string }) => {
+          checkCustomer(p.customer);
+          return page(state.sessions.filter((s) => s.customer === p.customer && s.status === (p.status ?? "open")), p);
+        }),
+        expire: vi.fn(async (id: string) => {
+          const s = state.sessions.find((x) => x.id === id);
+          if (!s) throw missing("session");
+          s.status = "expired";
+          return s;
+        }),
+        create: vi.fn(async (p: { customer: string; line_items: { price: string }[] }) => {
+          checkCustomer(p.customer);
+          const id = `cs_${state.nextId++}`;
+          const s: AnySession = { id, url: `https://checkout.stripe.test/${id}`, customer: p.customer, status: "open", price: p.line_items[0]?.price };
+          state.sessions.push(s);
+          return s;
+        }),
+      },
+    },
+    customers: {
+      create: vi.fn(async (...args: unknown[]) => {
+        void args;
+        const c = { id: `cus_new${state.nextId++}` };
+        state.customers.push(c);
+        return c;
+      }),
+    },
+    billingPortal: { sessions: { create: vi.fn(async () => ({ url: "https://portal.stripe.test/p" })) } },
+  };
+  return { state, api, client: api as unknown as Stripe };
 }

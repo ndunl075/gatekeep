@@ -3,14 +3,17 @@ import type Stripe from "stripe";
 import { MemoryStore } from "../store/memory";
 import type { Project } from "../types";
 import { applyStripeEvent, type StripeSubscriptions } from "./webhook";
-import { PRO_PRICE, SCALE_PRICE, checkoutSession, stripeEvent, subscription } from "./test-helpers";
+import { PRO_PRICE, SCALE_PRICE, checkoutSession, makeFakeStripe, stripeEvent, subscription } from "./test-helpers";
 
 let store: MemoryStore;
 let project: Project;
 /** What Stripe would answer right now. Events never carry the truth, this does. */
-let stripeState: Stripe.Subscription[];
-let list: ReturnType<typeof vi.fn>;
+let fake: ReturnType<typeof makeFakeStripe>;
 let stripe: StripeSubscriptions;
+let list: ReturnType<typeof makeFakeStripe>["api"]["subscriptions"]["list"];
+const setSubs = (subs: unknown[]) => {
+  fake.state.subs = subs as typeof fake.state.subs;
+};
 
 const get = async () => (await store.getProject(project.id))!;
 const sub = (over: Record<string, unknown> = {}) =>
@@ -26,9 +29,9 @@ beforeEach(async () => {
   vi.spyOn(console, "warn").mockImplementation(() => {});
   store = new MemoryStore();
   project = await store.createProject("owner", "Acme");
-  stripeState = [];
-  list = vi.fn(async () => ({ data: stripeState }));
-  stripe = { subscriptions: { list } } as unknown as StripeSubscriptions;
+  fake = makeFakeStripe(10);
+  list = fake.api.subscriptions.list;
+  stripe = fake.client as unknown as StripeSubscriptions;
 });
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -42,16 +45,16 @@ describe("every relevant event syncs from Stripe", () => {
     ["customer.subscription.deleted", () => sub()],
     ["checkout.session.completed", () => checkoutSession({ metadata: { project_id: project.id } })],
   ])("%s", async (type, payload) => {
-    stripeState = [sub()];
+    setSubs([sub()]);
     const r = await apply(type, payload());
     expect(r.changed).toBe(true);
-    expect(list).toHaveBeenCalledWith({ customer: "cus_1", status: "all", limit: 10 });
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({ customer: "cus_1", status: "all" }));
     expect(await get()).toMatchObject({ plan: "pro", stripe_customer_id: "cus_1", stripe_subscription_id: "sub_1" });
   });
 
   it("the payload never decides the plan: a deleted event with an active price payload still follows Stripe", async () => {
     await linked();
-    stripeState = [sub({ status: "canceled" })];
+    setSubs([sub({ status: "canceled" })]);
     await apply("customer.subscription.deleted", sub({ status: "active" }));
     expect(await get()).toMatchObject({ plan: "free", stripe_subscription_id: null, stripe_customer_id: "cus_1" });
   });
@@ -75,41 +78,41 @@ describe("plan from subscription status and price", () => {
     ["trialing", PRO_PRICE, "pro"],
     ["past_due", SCALE_PRICE, "scale"],
   ])("%s on %s grants %s", async (status, priceId, plan) => {
-    stripeState = [sub({ status, items: price(priceId) })];
+    setSubs([sub({ status, items: price(priceId) })]);
     await apply("customer.subscription.updated", sub());
     expect(await get()).toMatchObject({ plan, stripe_subscription_id: "sub_1" });
   });
 
   it.each(["unpaid", "incomplete", "paused", "canceled", "incomplete_expired"])("%s is free with no subscription id", async (status) => {
     await linked();
-    stripeState = [sub({ status })];
+    setSubs([sub({ status })]);
     await apply("customer.subscription.updated", sub());
     expect(await get()).toMatchObject({ plan: "free", stripe_subscription_id: null });
   });
 
   it("follows a plan change on the same subscription", async () => {
-    stripeState = [sub()];
+    setSubs([sub()]);
     await apply("customer.subscription.created", sub());
-    stripeState = [sub({ items: price(SCALE_PRICE) })];
+    setSubs([sub({ items: price(SCALE_PRICE) })]);
     await apply("customer.subscription.updated", sub());
     expect((await get()).plan).toBe("scale");
   });
 
   it("takes the highest plan when several items are present", async () => {
-    stripeState = [sub({ items: { data: [{ price: { id: PRO_PRICE } }, { price: { id: SCALE_PRICE } }] } })];
+    setSubs([sub({ items: { data: [{ price: { id: PRO_PRICE } }, { price: { id: SCALE_PRICE } }] } })]);
     await apply("customer.subscription.updated", sub());
     expect((await get()).plan).toBe("scale");
   });
 
   it("never trusts a plan name in metadata, only price ids", async () => {
-    stripeState = [sub({ metadata: { project_id: project.id, plan: "scale" }, items: price("price_unknown") })];
+    setSubs([sub({ metadata: { project_id: project.id, plan: "scale" }, items: price("price_unknown") })]);
     await apply("customer.subscription.created", sub({ metadata: { project_id: project.id, plan: "scale" } }));
     expect((await get()).plan).toBe("free");
   });
 
   it("does not downgrade a payer whose live subscription has an unknown price", async () => {
     await linked();
-    stripeState = [sub({ items: price("price_unknown") })];
+    setSubs([sub({ items: price("price_unknown") })]);
     const r = await apply("customer.subscription.updated", sub());
     expect(r).toMatchObject({ changed: false, reason: "unknown price" });
     expect((await get()).plan).toBe("pro");
@@ -119,27 +122,27 @@ describe("plan from subscription status and price", () => {
 describe("out-of-order and replayed events", () => {
   it("a late subscription.updated(active) after deleted does not re-grant the plan", async () => {
     await linked();
-    stripeState = [sub({ status: "canceled" })];
+    setSubs([sub({ status: "canceled" })]);
     await apply("customer.subscription.deleted", sub({ status: "canceled" }));
     await apply("customer.subscription.updated", sub({ status: "active" }));
     expect(await get()).toMatchObject({ plan: "free", stripe_subscription_id: null });
   });
 
   it("a late subscription.created(incomplete) after updated(active) does not downgrade a payer", async () => {
-    stripeState = [sub({ status: "active" })];
+    setSubs([sub({ status: "active" })]);
     await apply("customer.subscription.updated", sub({ status: "active" }));
     await apply("customer.subscription.created", sub({ status: "incomplete" }));
     expect(await get()).toMatchObject({ plan: "pro", stripe_subscription_id: "sub_1" });
   });
 
   it("a late checkout.session.completed does not re-link a dead subscription", async () => {
-    stripeState = [sub({ status: "canceled" })];
+    setSubs([sub({ status: "canceled" })]);
     await apply("checkout.session.completed", checkoutSession({ client_reference_id: project.id }));
     expect(await get()).toMatchObject({ plan: "free", stripe_customer_id: "cus_1", stripe_subscription_id: null });
   });
 
   it("any ordering of the same events ends in the same state", async () => {
-    stripeState = [sub({ id: "sub_2", items: price(SCALE_PRICE) }), sub({ id: "sub_1", status: "canceled" })];
+    setSubs([sub({ id: "sub_2", items: price(SCALE_PRICE) }), sub({ id: "sub_1", status: "canceled" })]);
     const events = [
       ["customer.subscription.created", sub({ id: "sub_1", status: "incomplete" })],
       ["customer.subscription.updated", sub({ id: "sub_1", status: "active" })],
@@ -156,7 +159,7 @@ describe("out-of-order and replayed events", () => {
   });
 
   it("applying the same event twice writes once", async () => {
-    stripeState = [sub()];
+    setSubs([sub()]);
     const spy = vi.spyOn(store, "setBilling");
     const first = await apply("customer.subscription.created", sub());
     const second = await apply("customer.subscription.created", sub());
@@ -169,20 +172,20 @@ describe("out-of-order and replayed events", () => {
 describe("two live subscriptions", () => {
   it("deleting one keeps the plan of the other and points at it", async () => {
     await store.setBilling(project.id, { plan: "scale", stripe_customer_id: "cus_1", stripe_subscription_id: "sub_2" });
-    stripeState = [sub({ id: "sub_2", items: price(SCALE_PRICE) }), sub({ id: "sub_1", status: "canceled" })];
+    setSubs([sub({ id: "sub_2", items: price(SCALE_PRICE) }), sub({ id: "sub_1", status: "canceled" })]);
     await apply("customer.subscription.deleted", sub({ id: "sub_1", status: "canceled" }));
     expect(await get()).toMatchObject({ plan: "scale", stripe_subscription_id: "sub_2" });
   });
 
   it("deleting the higher one falls back to the remaining lower one", async () => {
     await store.setBilling(project.id, { plan: "scale", stripe_customer_id: "cus_1", stripe_subscription_id: "sub_2" });
-    stripeState = [sub({ id: "sub_2", status: "canceled", items: price(SCALE_PRICE) }), sub({ id: "sub_1" })];
+    setSubs([sub({ id: "sub_2", status: "canceled", items: price(SCALE_PRICE) }), sub({ id: "sub_1" })]);
     await apply("customer.subscription.deleted", sub({ id: "sub_2", status: "canceled" }));
     expect(await get()).toMatchObject({ plan: "pro", stripe_subscription_id: "sub_1" });
   });
 
   it("chooses the highest plan while both are live", async () => {
-    stripeState = [sub({ id: "sub_1" }), sub({ id: "sub_2", items: price(SCALE_PRICE) })];
+    setSubs([sub({ id: "sub_1" }), sub({ id: "sub_2", items: price(SCALE_PRICE) })]);
     await apply("customer.subscription.created", sub({ id: "sub_2" }));
     expect(await get()).toMatchObject({ plan: "scale", stripe_subscription_id: "sub_2" });
   });
@@ -191,7 +194,7 @@ describe("two live subscriptions", () => {
 describe("project resolution", () => {
   it("finds the project by customer id when metadata is missing", async () => {
     await store.setBilling(project.id, { stripe_customer_id: "cus_1" });
-    stripeState = [sub()];
+    setSubs([sub()]);
     await apply("customer.subscription.created", subscription());
     expect((await get()).plan).toBe("pro");
   });
@@ -199,7 +202,7 @@ describe("project resolution", () => {
   it("prefers an already linked customer over the project id in the payload", async () => {
     const other = await store.createProject("owner", "Other");
     await store.setBilling(other.id, { stripe_customer_id: "cus_1" });
-    stripeState = [sub()];
+    setSubs([sub()]);
     await apply("customer.subscription.created", sub());
     expect((await store.getProject(other.id))?.plan).toBe("pro");
     expect((await get()).plan).toBe("free");
@@ -207,7 +210,7 @@ describe("project resolution", () => {
 
   it("refuses a project that is linked to a different customer", async () => {
     await store.setBilling(project.id, { plan: "free", stripe_customer_id: "cus_mine" });
-    stripeState = [sub({ customer: "cus_attacker" })];
+    setSubs([sub({ customer: "cus_attacker" })]);
     const r = await apply("customer.subscription.created", sub({ customer: "cus_attacker" }));
     expect(r).toMatchObject({ handled: true, changed: false, reason: "customer mismatch" });
     expect(list).not.toHaveBeenCalled();
@@ -215,7 +218,7 @@ describe("project resolution", () => {
   });
 
   it("links the customer to a project that has none yet", async () => {
-    stripeState = [sub()];
+    setSubs([sub()]);
     await apply("checkout.session.completed", checkoutSession({ client_reference_id: project.id }));
     expect((await get()).stripe_customer_id).toBe("cus_1");
   });
@@ -227,7 +230,7 @@ describe("project resolution", () => {
   });
 
   it("reads an expanded customer object", async () => {
-    stripeState = [sub({ customer: { id: "cus_7", object: "customer" } })];
+    setSubs([sub({ customer: { id: "cus_7", object: "customer" } })]);
     await apply("customer.subscription.created", sub({ customer: { id: "cus_7", object: "customer" } }));
     expect((await get()).stripe_customer_id).toBe("cus_7");
   });
@@ -249,8 +252,104 @@ describe("unknown events and failures", () => {
   });
 
   it("propagates store failures", async () => {
-    stripeState = [sub()];
+    setSubs([sub()]);
     vi.spyOn(store, "setBilling").mockRejectedValueOnce(new Error("db down"));
     await expect(apply("customer.subscription.created", sub())).rejects.toThrow("db down");
+  });
+});
+
+describe("pagination", () => {
+  const dead = (n: number) =>
+    Array.from({ length: n }, (_, i) => sub({ id: `sub_dead_${i}`, status: i % 2 ? "canceled" : "incomplete_expired" }));
+
+  it("finds an old live subscription behind 25 newer dead ones (3 pages)", async () => {
+    setSubs([...dead(25), sub({ id: "sub_old", items: price(SCALE_PRICE) })]);
+    await apply("customer.subscription.updated", sub());
+    expect(list.mock.calls.length).toBe(3);
+    expect(list.mock.calls[1][0]).toMatchObject({ starting_after: "sub_dead_9" });
+    expect(await get()).toMatchObject({ plan: "scale", stripe_subscription_id: "sub_old" });
+  });
+
+  it("does not free a payer when a full page of dead subscriptions comes first", async () => {
+    await store.setBilling(project.id, { plan: "pro", stripe_customer_id: "cus_1", stripe_subscription_id: "sub_old" });
+    setSubs([...dead(10), sub({ id: "sub_old" })]);
+    await apply("customer.subscription.created", sub({ id: "sub_dead_0", status: "incomplete" }));
+    expect(await get()).toMatchObject({ plan: "pro", stripe_subscription_id: "sub_old" });
+  });
+
+  it("still goes to free when all pages are dead", async () => {
+    await linked();
+    setSubs(dead(23));
+    await apply("customer.subscription.deleted", sub());
+    expect(await get()).toMatchObject({ plan: "free", stripe_subscription_id: null });
+  });
+
+  it("stops with an error instead of looping forever", async () => {
+    list.mockImplementation(async () => ({ data: [sub({ id: "sub_x" })], has_more: true }) as never);
+    await expect(apply("customer.subscription.created", sub())).rejects.toThrow(/more than/);
+  });
+});
+
+describe("duplicate live subscriptions", () => {
+  const cancel = () => fake.api.subscriptions.cancel;
+
+  it("keeps the best subscription and cancels the extra one with proration", async () => {
+    setSubs([sub({ id: "sub_a" }), sub({ id: "sub_b", items: price(SCALE_PRICE) })]);
+    const r = await apply("customer.subscription.created", sub({ id: "sub_b" }));
+    expect(r.canceled).toEqual(["sub_a"]);
+    expect(cancel()).toHaveBeenCalledTimes(1);
+    expect(cancel()).toHaveBeenCalledWith("sub_a", { prorate: true });
+    expect(await get()).toMatchObject({ plan: "scale", stripe_subscription_id: "sub_b" });
+  });
+
+  it("two subscriptions of the same plan: the newest (first in Stripe's list) is kept", async () => {
+    setSubs([sub({ id: "sub_new" }), sub({ id: "sub_old" })]);
+    await apply("checkout.session.completed", checkoutSession({ client_reference_id: project.id }));
+    expect(cancel()).toHaveBeenCalledWith("sub_old", { prorate: true });
+    expect((await get()).stripe_subscription_id).toBe("sub_new");
+  });
+
+  it("cancels every extra, including trialing and past_due ones", async () => {
+    setSubs([
+      sub({ id: "sub_a", items: price(SCALE_PRICE) }),
+      sub({ id: "sub_b", status: "trialing" }),
+      sub({ id: "sub_c", status: "past_due" }),
+      sub({ id: "sub_d", status: "canceled" }),
+    ]);
+    const r = await apply("customer.subscription.updated", sub());
+    expect(r.canceled).toEqual(["sub_b", "sub_c"]);
+  });
+
+  it("is idempotent: the second delivery finds nothing left to cancel", async () => {
+    setSubs([sub({ id: "sub_a" }), sub({ id: "sub_b", items: price(SCALE_PRICE) })]);
+    await apply("customer.subscription.created", sub());
+    const second = await apply("customer.subscription.created", sub());
+    expect(second.canceled).toBeUndefined();
+    expect(cancel()).toHaveBeenCalledTimes(1);
+  });
+
+  it("never cancels a live subscription with a price it does not know", async () => {
+    setSubs([sub({ id: "sub_a" }), sub({ id: "sub_other", items: price("price_unknown") })]);
+    await apply("customer.subscription.created", sub());
+    expect(cancel()).not.toHaveBeenCalled();
+    expect((await get()).plan).toBe("pro");
+  });
+
+  it("cancels nothing when there is no live subscription", async () => {
+    setSubs([sub({ status: "canceled" })]);
+    await apply("customer.subscription.deleted", sub());
+    expect(cancel()).not.toHaveBeenCalled();
+  });
+
+  it("ignores an extra that is already gone, but fails the event on any other cancel error", async () => {
+    setSubs([sub({ id: "sub_a" }), sub({ id: "sub_b", items: price(SCALE_PRICE) })]);
+    cancel().mockRejectedValueOnce(Object.assign(new Error("gone"), { code: "resource_missing" }));
+    await expect(apply("customer.subscription.created", sub())).resolves.toMatchObject({ handled: true });
+
+    setSubs([sub({ id: "sub_a" }), sub({ id: "sub_b", items: price(SCALE_PRICE) })]);
+    cancel().mockRejectedValueOnce(new Error("stripe down"));
+    await expect(apply("customer.subscription.created", sub())).rejects.toThrow("stripe down");
+    // the plan was already written, so a retry only has the cancel left to do
+    expect((await get()).plan).toBe("scale");
   });
 });

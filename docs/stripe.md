@@ -72,9 +72,17 @@ For each of the four events the webhook:
 
 1. finds the project (a customer already linked to a project wins; otherwise `metadata.project_id` /
    `client_reference_id`). A project linked to a *different* customer is refused and the event ignored.
-2. asks Stripe for that customer's current subscriptions (`subscriptions.list`, status `all`).
+2. asks Stripe for **all** of that customer's subscriptions (`subscriptions.list`, status `all`, paged until
+   `has_more` is false, so a live subscription hidden behind many abandoned checkouts is still found).
 3. picks the best live one (`active`, `trialing` or `past_due`, a price id we know, highest plan first) and sets
    the project's plan and subscription id from it, or Free with no subscription id when there is none.
+4. if there is **more than one** live subscription, keeps the best and cancels the others immediately with
+   `prorate: true` (logged). The unused time is credited to the customer's Stripe balance, not refunded to the card:
+   refund by hand in the dashboard if you want money back. Live subscriptions with a price we do not know are never
+   cancelled. A failed cancel makes the webhook return 500, so Stripe retries.
+
+`past_due` keeps the paid plan until Stripe's dunning (Smart Retries) ends and the subscription becomes `unpaid` or
+`canceled`; set the retry schedule and the final action in Dashboard → Settings → Billing → Subscriptions and emails.
 
 Because the result depends on Stripe's state at processing time, replays, duplicates and any ordering of the same
 events end in the same place. If Stripe's API or our database fails, the webhook returns 500 and Stripe retries.
@@ -83,9 +91,11 @@ instead of downgrading someone who is being charged.
 
 ## One subscription per project
 
-Before creating a Checkout session the app asks Stripe whether the customer already has an `active`, `trialing`,
-`past_due`, `incomplete`, `unpaid` or `paused` subscription. If so it sends the user to the customer portal instead,
-so a project is never billed twice.
+Before creating a Checkout session the app asks Stripe (all pages, never our own database) whether the customer
+already has an `active`, `trialing`, `past_due`, `incomplete`, `unpaid` or `paused` subscription. If so it sends the
+user to the customer portal instead. It then expires any Checkout session the customer still has open, so clicking
+twice or using two tabs leaves exactly one payable session. Two clicks at the very same instant can still race; the
+duplicate-subscription cleanup above is the backstop that stops the double billing.
 
 ## Demo mode
 

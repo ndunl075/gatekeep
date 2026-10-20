@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type Stripe from "stripe";
 import { MemoryStore, defaultProject } from "../store/memory";
+import { makeFakeStripe, subscription } from "./test-helpers";
 import {
   BillingError,
   billingAvailability,
@@ -48,36 +48,31 @@ describe("getStripe", () => {
   });
 });
 
-function fakeStripe() {
-  const customers = { create: vi.fn(async () => ({ id: "cus_new" })) };
-  const sessions = { create: vi.fn(async () => ({ url: "https://checkout.stripe.test/s" })) };
-  const portal = { create: vi.fn(async () => ({ url: "https://portal.stripe.test/p" })) };
-  const subs = { list: vi.fn(async () => ({ data: [] as { id: string; status: string }[] })) };
-  const stripe = { customers, checkout: { sessions }, billingPortal: { sessions: portal }, subscriptions: subs };
-  return { stripe: stripe as unknown as Stripe, customers, sessions, portal, subs };
-}
+const live = (over: Record<string, unknown> = {}) => subscription({ customer: "cus_old", ...over });
 
 describe("createCheckoutSession", () => {
-  const setup = async () => {
+  const setup = async (pageSize = 100) => {
     vi.stubEnv("STRIPE_PRICE_PRO", "price_p");
     vi.stubEnv("STRIPE_PRICE_SCALE", "price_s");
     const store = new MemoryStore();
     const project = await store.createProject("owner", "Acme");
-    return { store, project, ...fakeStripe() };
+    const fake = makeFakeStripe(pageSize);
+    const existing = async () => store.setBilling(project.id, { stripe_customer_id: "cus_old" });
+    return { store, project, fake, stripe: fake.client, existing };
   };
 
   it("creates a customer, persists it, and builds a subscription session", async () => {
-    const { store, project, stripe, customers, sessions } = await setup();
+    const { store, project, stripe, fake } = await setup();
     const url = await createCheckoutSession(project, "pro", { stripe, store, appUrl: "https://app.test/" });
-    expect(url).toBe("https://checkout.stripe.test/s");
-    expect(customers.create).toHaveBeenCalledTimes(1);
-    expect((await store.getProject(project.id))?.stripe_customer_id).toBe("cus_new");
+    expect(fake.api.customers.create).toHaveBeenCalledTimes(1);
+    const customer = fake.state.customers[0].id;
+    expect(url).toMatch(/^https:\/\/checkout\.stripe\.test\//);
+    expect((await store.getProject(project.id))?.stripe_customer_id).toBe(customer);
     expect((await store.getProject(project.id))?.plan).toBe("free"); // checkout alone never upgrades
 
-    const params = (sessions.create.mock.calls[0] as unknown[])[0];
-    expect(params).toMatchObject({
+    expect(fake.api.checkout.sessions.create.mock.calls[0][0]).toMatchObject({
       mode: "subscription",
-      customer: "cus_new",
+      customer,
       line_items: [{ price: "price_p", quantity: 1 }],
       allow_promotion_codes: true,
       client_reference_id: project.id,
@@ -89,83 +84,150 @@ describe("createCheckoutSession", () => {
   });
 
   it("uses the scale price for the scale plan", async () => {
-    const { store, project, stripe, sessions } = await setup();
+    const { store, project, stripe, fake } = await setup();
     await createCheckoutSession(project, "scale", { stripe, store });
-    expect((sessions.create.mock.calls[0] as unknown[])[0]).toMatchObject({ line_items: [{ price: "price_s" }] });
+    expect(fake.api.checkout.sessions.create.mock.calls[0][0]).toMatchObject({ line_items: [{ price: "price_s" }] });
   });
 
   it("reuses an existing customer", async () => {
-    const { store, project, stripe, customers, sessions } = await setup();
-    const withCustomer = await store.setBilling(project.id, { plan: "free", stripe_customer_id: "cus_old" });
-    await createCheckoutSession(withCustomer, "pro", { stripe, store });
-    expect(customers.create).not.toHaveBeenCalled();
-    expect((sessions.create.mock.calls[0] as unknown[])[0]).toMatchObject({ customer: "cus_old" });
-  });
-
-  it("replaces a customer that no longer exists in Stripe", async () => {
-    const { store, project, stripe, customers, sessions } = await setup();
-    const stale = await store.setBilling(project.id, { plan: "free", stripe_customer_id: "cus_gone" });
-    sessions.create.mockRejectedValueOnce(Object.assign(new Error("No such customer"), { code: "resource_missing" }));
-    await createCheckoutSession(stale, "pro", { stripe, store });
-    expect(customers.create).toHaveBeenCalledTimes(1);
-    expect((await store.getProject(project.id))?.stripe_customer_id).toBe("cus_new");
-    expect(sessions.create).toHaveBeenCalledTimes(2);
-  });
-
-  it("does not swallow other Stripe errors", async () => {
-    const { store, project, stripe, sessions } = await setup();
-    sessions.create.mockRejectedValueOnce(new Error("boom"));
-    await expect(createCheckoutSession(project, "pro", { stripe, store })).rejects.toThrow("boom");
+    const { store, stripe, fake, existing } = await setup();
+    await createCheckoutSession(await existing(), "pro", { stripe, store });
+    expect(fake.api.customers.create).not.toHaveBeenCalled();
+    expect(fake.api.checkout.sessions.create.mock.calls[0][0]).toMatchObject({ customer: "cus_old" });
   });
 
   it("persists only the customer id, never a plan read earlier in the request", async () => {
     const { store, project, stripe } = await setup();
     const spy = vi.spyOn(store, "setBilling");
     await createCheckoutSession({ ...project, plan: "scale" }, "pro", { stripe, store });
-    expect(spy).toHaveBeenCalledWith(project.id, { stripe_customer_id: "cus_new" });
+    expect(spy).toHaveBeenCalledWith(project.id, { stripe_customer_id: expect.stringMatching(/^cus_new/) });
     expect((await store.getProject(project.id))?.plan).toBe("free");
   });
 
-  it.each(["active", "trialing", "past_due", "incomplete", "unpaid", "paused"])(
-    "refuses when Stripe already shows a %s subscription for the customer",
-    async (status) => {
-      const { store, project, stripe, subs, sessions } = await setup();
-      const withCustomer = await store.setBilling(project.id, { stripe_customer_id: "cus_old" });
-      subs.list.mockResolvedValueOnce({ data: [{ id: "sub_x", status }] });
-      await expect(createCheckoutSession(withCustomer, "pro", { stripe, store })).rejects.toMatchObject({
+  it("does not list anything for a brand new customer", async () => {
+    const { store, project, stripe, fake } = await setup();
+    await createCheckoutSession(project, "pro", { stripe, store });
+    expect(fake.api.subscriptions.list).not.toHaveBeenCalled();
+    expect(fake.api.checkout.sessions.list).not.toHaveBeenCalled();
+  });
+
+  describe("existing subscription guard (asks Stripe, never the database)", () => {
+    it.each(["active", "trialing", "past_due", "incomplete", "unpaid", "paused"])("refuses on %s", async (status) => {
+      const { store, stripe, fake, existing } = await setup();
+      fake.state.subs = [live({ id: "sub_x", status })] as never;
+      await expect(createCheckoutSession(await existing(), "pro", { stripe, store })).rejects.toMatchObject({
         code: "already_subscribed",
       });
-      expect(subs.list).toHaveBeenCalledWith({ customer: "cus_old", status: "all", limit: 10 });
-      expect(sessions.create).not.toHaveBeenCalled();
-    },
-  );
-
-  it("allows checkout when the customer only has dead subscriptions", async () => {
-    const { store, project, stripe, subs, sessions } = await setup();
-    const withCustomer = await store.setBilling(project.id, { stripe_customer_id: "cus_old" });
-    subs.list.mockResolvedValueOnce({
-      data: [
-        { id: "sub_a", status: "canceled" },
-        { id: "sub_b", status: "incomplete_expired" },
-      ],
+      expect(fake.api.checkout.sessions.create).not.toHaveBeenCalled();
     });
-    await expect(createCheckoutSession(withCustomer, "pro", { stripe, store })).resolves.toContain("checkout.stripe.test");
-    expect(sessions.create).toHaveBeenCalledTimes(1);
+
+    it("allows checkout when the customer only has dead subscriptions", async () => {
+      const { store, stripe, fake, existing } = await setup();
+      fake.state.subs = [live({ id: "a", status: "canceled" }), live({ id: "b", status: "incomplete_expired" })] as never;
+      await expect(createCheckoutSession(await existing(), "pro", { stripe, store })).resolves.toContain("checkout.stripe.test");
+    });
+
+    it("sees a live subscription behind 25 newer dead ones (several pages)", async () => {
+      const { store, stripe, fake, existing } = await setup(10);
+      fake.state.subs = [
+        ...Array.from({ length: 25 }, (_, i) => live({ id: `dead_${i}`, status: "incomplete_expired" })),
+        live({ id: "sub_old", status: "active" }),
+      ] as never;
+      await expect(createCheckoutSession(await existing(), "pro", { stripe, store })).rejects.toMatchObject({
+        code: "already_subscribed",
+      });
+      expect(fake.api.subscriptions.list.mock.calls.length).toBe(3);
+    });
+
+    it("does not trust project.stripe_subscription_id in the database", async () => {
+      const { store, project, stripe, fake } = await setup();
+      const stale = await store.setBilling(project.id, { stripe_customer_id: "cus_old", stripe_subscription_id: "sub_gone" });
+      fake.state.subs = [live({ id: "sub_gone", status: "canceled" })] as never;
+      await expect(createCheckoutSession(stale, "pro", { stripe, store })).resolves.toContain("checkout.stripe.test");
+
+      // and the other way round: a live Stripe subscription blocks even when the database lost track of it
+      fake.state.subs = [live({ id: "sub_unknown", status: "active" })] as never;
+      await expect(createCheckoutSession(await store.setBilling(project.id, { stripe_subscription_id: null }), "pro", { stripe, store })).rejects.toMatchObject({ code: "already_subscribed" });
+    });
   });
 
-  it("does not list subscriptions for a brand new customer", async () => {
-    const { store, project, stripe, subs } = await setup();
-    await createCheckoutSession(project, "pro", { stripe, store });
-    expect(subs.list).not.toHaveBeenCalled();
+  describe("two Checkout tabs", () => {
+    it("expires every open session before creating a new one", async () => {
+      const { store, stripe, fake, existing } = await setup();
+      fake.state.sessions = [
+        { id: "cs_a", url: "u", customer: "cus_old", status: "open" },
+        { id: "cs_b", url: "u", customer: "cus_old", status: "open" },
+        { id: "cs_done", url: "u", customer: "cus_old", status: "complete" },
+      ];
+      await createCheckoutSession(await existing(), "pro", { stripe, store });
+      expect(fake.state.sessions.filter((s) => s.status === "open")).toHaveLength(1); // only the new one
+      expect(fake.api.checkout.sessions.expire).toHaveBeenCalledTimes(2);
+      expect(fake.state.sessions.find((s) => s.id === "cs_done")?.status).toBe("complete");
+    });
+
+    it("clicking twice leaves exactly one payable session", async () => {
+      const { store, stripe, fake, existing } = await setup();
+      const project = await existing();
+      const first = await createCheckoutSession(project, "pro", { stripe, store });
+      const second = await createCheckoutSession(project, "scale", { stripe, store });
+      const open = fake.state.sessions.filter((s) => s.status === "open");
+      expect(open).toHaveLength(1);
+      expect(second).toBe(open[0].url);
+      expect(first).not.toBe(second);
+    });
+
+    it("tolerates a session that completed or expired in the meantime", async () => {
+      const { store, stripe, fake, existing } = await setup();
+      fake.state.sessions = [{ id: "cs_a", url: "u", customer: "cus_old", status: "open" }];
+      fake.api.checkout.sessions.expire.mockRejectedValueOnce(
+        Object.assign(new Error("not open"), { type: "StripeInvalidRequestError" }),
+      );
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      await expect(createCheckoutSession(await existing(), "pro", { stripe, store })).resolves.toContain("checkout.stripe.test");
+    });
+
+    it("fails the checkout if a session cannot be expired for a real reason", async () => {
+      const { store, stripe, fake, existing } = await setup();
+      fake.state.sessions = [{ id: "cs_a", url: "u", customer: "cus_old", status: "open" }];
+      fake.api.checkout.sessions.expire.mockRejectedValueOnce(new Error("stripe down"));
+      await expect(createCheckoutSession(await existing(), "pro", { stripe, store })).rejects.toThrow("stripe down");
+      expect(fake.api.checkout.sessions.create).not.toHaveBeenCalled();
+    });
   });
 
-  it("refuses a second subscription", async () => {
-    const { store, project, stripe, sessions } = await setup();
-    const subscribed = { ...project, plan: "pro" as const, stripe_subscription_id: "sub_1" };
-    await expect(createCheckoutSession(subscribed, "scale", { stripe, store })).rejects.toMatchObject({
-      code: "already_subscribed",
+  describe("a stored customer that no longer exists in Stripe", () => {
+    it("is replaced when the subscription list says resource_missing", async () => {
+      const { store, project, stripe, fake, existing } = await setup();
+      fake.state.missingCustomers.add("cus_old");
+      await createCheckoutSession(await existing(), "pro", { stripe, store });
+      expect(fake.api.customers.create).toHaveBeenCalledTimes(1);
+      const after = await store.getProject(project.id);
+      expect(after?.stripe_customer_id).toBe(fake.state.customers[0].id);
+      expect(after?.stripe_customer_id).not.toBe("cus_old");
+      // the replacement customer gets a fresh idempotency key, not the replayable first one
+      expect(fake.api.customers.create.mock.calls[0][1]).toEqual({ idempotencyKey: expect.stringMatching(/^gatekeep-customer-.+-\d+$/) });
     });
-    expect(sessions.create).not.toHaveBeenCalled();
+
+    it("is replaced when only session creation notices", async () => {
+      const { store, project, stripe, fake, existing } = await setup();
+      fake.api.checkout.sessions.create.mockRejectedValueOnce(Object.assign(new Error("No such customer"), { code: "resource_missing" }));
+      await createCheckoutSession(await existing(), "pro", { stripe, store });
+      expect(fake.api.customers.create).toHaveBeenCalledTimes(1);
+      expect((await store.getProject(project.id))?.stripe_customer_id).toBe(fake.state.customers[0].id);
+    });
+
+    it("gives up (no loop) if the brand new customer is also missing", async () => {
+      const { store, stripe, fake, existing } = await setup();
+      fake.api.checkout.sessions.create.mockRejectedValue(Object.assign(new Error("No such customer"), { code: "resource_missing" }));
+      await expect(createCheckoutSession(await existing(), "pro", { stripe, store })).rejects.toThrow("No such customer");
+      expect(fake.api.customers.create).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("does not swallow other Stripe errors", async () => {
+    const { store, project, stripe, fake } = await setup();
+    fake.api.checkout.sessions.create.mockRejectedValueOnce(new Error("boom"));
+    await expect(createCheckoutSession(project, "pro", { stripe, store })).rejects.toThrow("boom");
   });
 
   it("rejects free, missing prices and a missing Stripe client", async () => {
@@ -179,17 +241,15 @@ describe("createCheckoutSession", () => {
 
 describe("createPortalSession", () => {
   it("opens the portal for the project's customer and returns to the billing page", async () => {
-    const { stripe, portal } = fakeStripe();
+    const fake = makeFakeStripe();
     const project = { ...defaultProject("o", "Acme"), stripe_customer_id: "cus_1" };
-    expect(await createPortalSession(project, { stripe, appUrl: "https://app.test" })).toBe("https://portal.stripe.test/p");
-    expect(portal.create).toHaveBeenCalledWith({ customer: "cus_1", return_url: "https://app.test/dashboard/billing" });
+    expect(await createPortalSession(project, { stripe: fake.client, appUrl: "https://app.test" })).toBe("https://portal.stripe.test/p");
+    expect(fake.api.billingPortal.sessions.create).toHaveBeenCalledWith({ customer: "cus_1", return_url: "https://app.test/dashboard/billing" });
   });
 
   it("needs a customer and a Stripe client", async () => {
-    const { stripe } = fakeStripe();
-    await expect(createPortalSession(defaultProject("o", "Acme"), { stripe })).rejects.toMatchObject({ code: "no_customer" });
-    await expect(createPortalSession(defaultProject("o", "Acme"), { stripe: null })).rejects.toMatchObject({
-      code: "not_configured",
-    });
+    const { client } = makeFakeStripe();
+    await expect(createPortalSession(defaultProject("o", "Acme"), { stripe: client })).rejects.toMatchObject({ code: "no_customer" });
+    await expect(createPortalSession(defaultProject("o", "Acme"), { stripe: null })).rejects.toMatchObject({ code: "not_configured" });
   });
 });
