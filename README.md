@@ -11,7 +11,9 @@ curl -X POST https://<your-deployment>/check \
   -H "Authorization: Bearer gk_live_..." \
   -H "Content-Type: application/json" \
   -d '{"email":"n.ico+7@gmail.com","ip":"185.220.101.7","user_agent":"Mozilla/5.0 ..."}'
-# → {"decision":"challenge","score":50,"reason":"nico@gmail.com already signed up 4 times; ...","signals":[...]}
+# example response:
+# {"id":"...","decision":"challenge","score":50,"reason":"This email was already checked in the last 30 days; ...",
+#  "signals":[...],"normalized_email":"nico@gmail.com","latency_ms":12}
 ```
 
 ## What's in the box
@@ -19,7 +21,7 @@ curl -X POST https://<your-deployment>/check \
 | Area | Where |
 |---|---|
 | `POST /api/v1/check` (also `/check`): validation, key auth, per-key rate limit, plan quota, fail open | `src/app/api/v1/check`, `src/lib/check-service.ts` |
-| Scoring engine: ~98k disposable domains, Gmail dot/plus normalizing, MX lookup, same IP / device 3+ in 24h, signup bursts, gibberish emails and names, bot user agents | `src/lib/engine` |
+| Scoring engine: ~98k disposable domains, Gmail dot/plus normalizing, MX lookup, same IP / device 3+ in 24h, the same inbox signing up again, signup bursts, gibberish emails and names, bot user agents | `src/lib/engine` |
 | Counters: Upstash Redis sliding windows, Postgres fallback, memory in demo | `src/lib/counters` |
 | Dashboard: overview (checked, blocked, challenged, est. credits saved), checks log + detail, API keys, settings, billing, integrate + live playground | `src/app/dashboard` |
 | Supabase: schema + RLS migration, store, magic-link auth | `supabase/`, `src/lib/store`, `src/lib/supabase` |
@@ -35,7 +37,7 @@ Pricing: Free 500 checks/mo, Pro $29/mo for 10k, Scale $99/mo for 100k (`src/lib
 npm install
 npm run dev        # http://localhost:3000 in demo mode: seeded data, no login, no billing
 npm run check      # lint + typecheck + tests
-npm run build
+npm run build      # `npm start` (production mode) needs GATEKEEP_DEMO=1 or Supabase env vars
 ```
 
 Demo key for local calls: `gk_live_demo_key_for_the_playground_only`. CI (GitHub Actions) runs lint, typecheck,
