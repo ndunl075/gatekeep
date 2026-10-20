@@ -59,6 +59,7 @@ export function makeFakeStripe(pageSize = 100) {
     sessions: [] as AnySession[],
     customers: [] as { id: string }[],
     missingCustomers: new Set<string>(),
+    idempotent: new Map<string, { id: string }>(),
     nextId: 1,
   };
   const missing = (what: string) => Object.assign(new Error(`No such ${what}`), { code: "resource_missing", type: "StripeInvalidRequestError" });
@@ -108,10 +109,13 @@ export function makeFakeStripe(pageSize = 100) {
       },
     },
     customers: {
-      create: vi.fn(async (...args: unknown[]) => {
-        void args;
+      // Like Stripe, a replayed idempotency key returns the original customer instead of making another.
+      create: vi.fn(async (_params?: unknown, opts?: { idempotencyKey?: string }) => {
+        const key = opts?.idempotencyKey;
+        if (key && state.idempotent.has(key)) return state.idempotent.get(key)!;
         const c = { id: `cus_new${state.nextId++}` };
         state.customers.push(c);
+        if (key) state.idempotent.set(key, c);
         return c;
       }),
     },

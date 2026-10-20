@@ -353,3 +353,31 @@ describe("duplicate live subscriptions", () => {
     expect((await get()).plan).toBe("scale");
   });
 });
+
+describe("choosing the subscription to keep", () => {
+  it("on a plan tie, active beats a newer trialing or past_due subscription", async () => {
+    setSubs([sub({ id: "sub_new_trial", status: "trialing" }), sub({ id: "sub_new_due", status: "past_due" }), sub({ id: "sub_paying", status: "active" })]);
+    const r = await apply("customer.subscription.created", sub());
+    expect(await get()).toMatchObject({ plan: "pro", stripe_subscription_id: "sub_paying" });
+    expect(r.canceled).toEqual(["sub_new_trial", "sub_new_due"]);
+    expect(fake.api.subscriptions.cancel).not.toHaveBeenCalledWith("sub_paying", expect.anything());
+  });
+
+  it("on a plan tie, trialing beats past_due", async () => {
+    setSubs([sub({ id: "sub_due", status: "past_due" }), sub({ id: "sub_trial", status: "trialing" })]);
+    await apply("customer.subscription.created", sub());
+    expect((await get()).stripe_subscription_id).toBe("sub_trial");
+  });
+
+  it("on a plan and status tie the newest (first in Stripe's list) wins", async () => {
+    setSubs([sub({ id: "sub_new", status: "past_due" }), sub({ id: "sub_old", status: "past_due" })]);
+    await apply("customer.subscription.created", sub());
+    expect((await get()).stripe_subscription_id).toBe("sub_new");
+  });
+
+  it("a higher plan still beats a healthier lower one", async () => {
+    setSubs([sub({ id: "sub_pro", status: "active" }), sub({ id: "sub_scale", status: "past_due", items: price(SCALE_PRICE) })]);
+    await apply("customer.subscription.created", sub());
+    expect(await get()).toMatchObject({ plan: "scale", stripe_subscription_id: "sub_scale" });
+  });
+});

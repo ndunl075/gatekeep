@@ -76,8 +76,8 @@ For each of the four events the webhook:
    `has_more` is false, so a live subscription hidden behind many abandoned checkouts is still found).
 3. picks the best live one (`active`, `trialing` or `past_due`, a price id we know, highest plan first) and sets
    the project's plan and subscription id from it, or Free with no subscription id when there is none.
-4. if there is **more than one** live subscription, keeps the best and cancels the others immediately with
-   `prorate: true` (logged). The unused time is credited to the customer's Stripe balance, not refunded to the card:
+4. if there is **more than one** live subscription, keeps the best (highest plan, then `active` over `trialing`
+   over `past_due`, then newest) and cancels the others immediately with `prorate: true` (logged). The unused time is credited to the customer's Stripe balance, not refunded to the card:
    refund by hand in the dashboard if you want money back. Live subscriptions with a price we do not know are never
    cancelled. A failed cancel makes the webhook return 500, so Stripe retries.
 
@@ -94,8 +94,11 @@ instead of downgrading someone who is being charged.
 Before creating a Checkout session the app asks Stripe (all pages, never our own database) whether the customer
 already has an `active`, `trialing`, `past_due`, `incomplete`, `unpaid` or `paused` subscription. If so it sends the
 user to the customer portal instead. It then expires any Checkout session the customer still has open, so clicking
-twice or using two tabs leaves exactly one payable session. Two clicks at the very same instant can still race; the
-duplicate-subscription cleanup above is the backstop that stops the double billing.
+twice or using two tabs leaves exactly one payable session. Two cases can still race: two clicks at the very same
+instant, and the **first-ever checkout from two tabs**, where there is no customer yet so there is nothing to list or
+expire and both sessions stay payable. If both are paid, the duplicate-subscription cleanup above cancels the extra
+one, and the prorated amount lands as a **credit on the customer's Stripe balance**, not back on their card. If the
+customer asks for the money back, refund it by hand in the Stripe dashboard.
 
 ## Demo mode
 

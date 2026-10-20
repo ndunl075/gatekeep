@@ -93,7 +93,7 @@ async function ensureCustomer(
   project: Project,
   store: Store,
   email?: string,
-  retry = false,
+  staleCustomerId: string | null = null,
 ): Promise<string> {
   if (project.stripe_customer_id) return project.stripe_customer_id;
   const customer = await stripe.customers.create(
@@ -102,8 +102,9 @@ async function ensureCustomer(
       ...(email ? { email } : {}),
       metadata: { project_id: project.id },
     },
-    // A replayed key returns the same customer for 24h, so a replacement after a stale id needs a fresh key.
-    { idempotencyKey: `gatekeep-customer-${project.id}${retry ? `-${Date.now()}` : ""}` },
+    // Deterministic, so concurrent clicks share one customer. A replacement for a stale customer id gets its own
+    // key (per stale id): the plain key would replay the dead customer, and a random one would split the clicks.
+    { idempotencyKey: `gatekeep-customer-${project.id}${staleCustomerId ? `-${staleCustomerId}` : ""}` },
   );
   await store.setBilling(project.id, { stripe_customer_id: customer.id });
   return customer.id;
@@ -171,11 +172,11 @@ export async function createCheckoutSession(
   // The stored customer may no longer exist in this Stripe account (e.g. test keys swapped for live ones).
   // Whichever Stripe call first notices, forget it and start over with a fresh customer, once.
   let customerId = project.stripe_customer_id;
-  let replaced = false;
+  let staleId: string | null = null;
   const forgetCustomer = async () => {
     await store.setBilling(project.id, { stripe_customer_id: null });
+    staleId = customerId;
     customerId = null;
-    replaced = true;
   };
 
   if (customerId) {
@@ -187,16 +188,16 @@ export async function createCheckoutSession(
     }
   }
   if (!customerId) {
-    customerId = await ensureCustomer(stripe, { ...project, stripe_customer_id: null }, store, deps.email, replaced);
+    customerId = await ensureCustomer(stripe, { ...project, stripe_customer_id: null }, store, deps.email, staleId);
   }
 
   let session: Stripe.Checkout.Session;
   try {
     session = await stripe.checkout.sessions.create(build(customerId));
   } catch (err) {
-    if (replaced || !project.stripe_customer_id || !isMissingResource(err)) throw err;
+    if (staleId || !project.stripe_customer_id || !isMissingResource(err)) throw err;
     await forgetCustomer();
-    customerId = await ensureCustomer(stripe, { ...project, stripe_customer_id: null }, store, deps.email, true);
+    customerId = await ensureCustomer(stripe, { ...project, stripe_customer_id: null }, store, deps.email, staleId);
     session = await stripe.checkout.sessions.create(build(customerId));
   }
   if (!session.url) throw new Error("Stripe returned a checkout session without a URL");

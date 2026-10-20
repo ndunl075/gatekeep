@@ -204,8 +204,36 @@ describe("createCheckoutSession", () => {
       const after = await store.getProject(project.id);
       expect(after?.stripe_customer_id).toBe(fake.state.customers[0].id);
       expect(after?.stripe_customer_id).not.toBe("cus_old");
-      // the replacement customer gets a fresh idempotency key, not the replayable first one
-      expect(fake.api.customers.create.mock.calls[0][1]).toEqual({ idempotencyKey: expect.stringMatching(/^gatekeep-customer-.+-\d+$/) });
+      // the replacement gets its own deterministic key per stale id, not the replayable first one
+      expect(fake.api.customers.create.mock.calls[0][1]).toEqual({ idempotencyKey: `gatekeep-customer-${project.id}-cus_old` });
+    });
+
+    it("two concurrent clicks share ONE replacement customer and both sessions use it", async () => {
+      const { store, stripe, fake, existing } = await setup();
+      fake.state.missingCustomers.add("cus_old");
+      const project = await existing();
+      const [a, b] = await Promise.all([
+        createCheckoutSession(project, "pro", { stripe, store }),
+        createCheckoutSession(project, "pro", { stripe, store }),
+      ]);
+      expect(a).toMatch(/checkout\.stripe\.test/);
+      expect(b).toMatch(/checkout\.stripe\.test/);
+      expect(fake.state.customers).toHaveLength(1);
+      expect(new Set(fake.api.checkout.sessions.create.mock.calls.map((c) => c[0].customer))).toEqual(
+        new Set([fake.state.customers[0].id]),
+      );
+      expect((await store.getProject(project.id))?.stripe_customer_id).toBe(fake.state.customers[0].id);
+    });
+
+    it("a customer that goes stale a second time gets a different key from the first replacement", async () => {
+      const { store, project, stripe, fake, existing } = await setup();
+      fake.state.missingCustomers.add("cus_old");
+      await createCheckoutSession(await existing(), "pro", { stripe, store });
+      const first = fake.state.customers[0].id;
+      fake.state.missingCustomers.add(first);
+      await createCheckoutSession((await store.getProject(project.id))!, "pro", { stripe, store });
+      expect(fake.state.customers).toHaveLength(2);
+      expect(fake.api.customers.create.mock.calls[1][1]).toEqual({ idempotencyKey: `gatekeep-customer-${project.id}-${first}` });
     });
 
     it("is replaced when only session creation notices", async () => {

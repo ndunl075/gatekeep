@@ -44,9 +44,12 @@ function planFromSubscription(sub: Stripe.Subscription): PlanId | null {
   return best;
 }
 
+/** Healthier statuses win a tie: the subscription that is actually paying must outlive a flaky or trial one. */
+const STATUS_RANK: Partial<Record<Stripe.Subscription.Status, number>> = { active: 3, trialing: 2, past_due: 1 };
+
 /**
- * The subscription that should grant the plan: live, with a price we know, highest plan first.
- * Ties go to the earliest in the list, which Stripe returns newest first.
+ * The subscription that should grant the plan: live, with a price we know. Ranked by plan, then status
+ * (active > trialing > past_due), then newest (Stripe lists newest first, and only a strictly better one replaces).
  */
 export function pickBestSubscription(subs: Stripe.Subscription[]): { sub: Stripe.Subscription; plan: PlanId } | null {
   let best: { sub: Stripe.Subscription; plan: PlanId } | null = null;
@@ -54,7 +57,13 @@ export function pickBestSubscription(subs: Stripe.Subscription[]): { sub: Stripe
     if (!LIVE_STATUSES.has(sub.status)) continue;
     const plan = planFromSubscription(sub);
     if (!plan) continue;
-    if (!best || PLAN_ORDER.indexOf(plan) > PLAN_ORDER.indexOf(best.plan)) best = { sub, plan };
+    if (!best) {
+      best = { sub, plan };
+      continue;
+    }
+    const byPlan = PLAN_ORDER.indexOf(plan) - PLAN_ORDER.indexOf(best.plan);
+    const byStatus = (STATUS_RANK[sub.status] ?? 0) - (STATUS_RANK[best.sub.status] ?? 0);
+    if (byPlan > 0 || (byPlan === 0 && byStatus > 0)) best = { sub, plan };
   }
   return best;
 }
