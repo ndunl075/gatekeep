@@ -147,12 +147,12 @@ export default function Home() {
                 <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-ink-2">Response</div>
                 <Code className="h-full bg-black/60">{`{
   "decision": "challenge",
-  "score": 55,
+  "score": 50,
   "reason": "Same address signed up 4 times; +alias; dots ignored",
   "signals": [
     { "id": "email_reuse", "points": 35 },
     { "id": "plus_alias", "points": 10 },
-    { "id": "dot_alias", "points": 10 }
+    { "id": "dot_alias", "points": 5 }
   ],
   "normalized_email": "nico@gmail.com",
   "latency_ms": 31

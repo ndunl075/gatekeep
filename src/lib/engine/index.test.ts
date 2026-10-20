@@ -174,8 +174,8 @@ describe("email_reuse", () => {
 });
 
 describe("bot_user_agent", () => {
-  it("flags missing and automated agents (30)", async () => {
-    for (const ua of [undefined, "", "curl/8.4.0", "python-requests/2.31", "HeadlessChrome/126"]) {
+  it("flags empty and automated agents (30)", async () => {
+    for (const ua of ["", "curl/8.4.0", "python-requests/2.31", "HeadlessChrome/126"]) {
       const r = await runChecks(input({ user_agent: ua, ip: undefined, email: `maria${ua?.length ?? 0}x@example.com` }), ctx());
       expect(r.signals.find((s) => s.id === "bot_user_agent")?.points, String(ua)).toBe(30);
     }
@@ -254,10 +254,10 @@ describe("plus_alias / dot_alias", () => {
   it("ignores +tag where it is not an alias", async () => {
     expect(ids(await runChecks(input({ email: "maria+promo@example.com" }), ctx()))).not.toContain("plus_alias");
   });
-  it("flags gmail dots (10) and both together (20)", async () => {
+  it("flags gmail dots (5) and both together (15)", async () => {
     const r = await runChecks(input({ email: "m.a.r.i.a+x@gmail.com" }), ctx());
     expect(ids(r).sort()).toEqual(["dot_alias", "plus_alias"]);
-    expect(r.score).toBe(20);
+    expect(r.score).toBe(15);
     expect(r.decision).toBe("allow");
   });
 });
@@ -285,14 +285,14 @@ describe("scoring", () => {
   });
 
   it("decides from thresholds: allow < challenge ≤ … < block", async () => {
-    // bot UA = 30, dot alias = 10, plus alias = 10 → 50
+    // bot UA = 30, dot alias = 5, plus alias = 10 → 45
     const base = (n: number) => ({ email: `m.a.r${"abcd"[n]}+x@gmail.com`, user_agent: "curl/8", ip: `2.2.2.${n}` });
     const r = await runChecks(input(base(0)), ctx());
-    expect(r.score).toBe(50);
+    expect(r.score).toBe(45);
     expect(r.decision).toBe("challenge");
-    expect((await runChecks(input({ ...base(1) }), ctx({ thresholds: { challenge: 51, block: 80 } }))).decision).toBe("allow");
-    expect((await runChecks(input({ ...base(2) }), ctx({ thresholds: { challenge: 20, block: 50 } }))).decision).toBe("block");
-    expect((await runChecks(input({ ...base(3) }), ctx({ thresholds: { challenge: 20, block: 51 } }))).decision).toBe("challenge");
+    expect((await runChecks(input({ ...base(1) }), ctx({ thresholds: { challenge: 46, block: 80 } }))).decision).toBe("allow");
+    expect((await runChecks(input({ ...base(2) }), ctx({ thresholds: { challenge: 20, block: 45 } }))).decision).toBe("block");
+    expect((await runChecks(input({ ...base(3) }), ctx({ thresholds: { challenge: 20, block: 46 } }))).decision).toBe("challenge");
   });
   it("custom thresholds apply exactly at the boundary", async () => {
     const t = { challenge: 30, block: 30 };
@@ -375,9 +375,14 @@ describe("untrusted input types", () => {
     const r = await runChecks(input(over as unknown as Partial<CheckInput>), ctx());
     expect(r.score).toBeGreaterThanOrEqual(0);
   });
-  it("treats a non-string user agent as missing and a non-string ip as absent", async () => {
+  it("treats a non-string user agent and a non-string ip as absent", async () => {
     const r = await runChecks(input({ user_agent: 5 as unknown as string, ip: 5 as unknown as string }), ctx());
-    expect(ids(r)).toEqual(["bot_user_agent"]);
+    expect(ids(r)).toEqual([]);
+  });
+  it("does not flag a user agent the caller did not send (server-side integrations)", async () => {
+    const r = await runChecks(input({ email: "jane.doe@gmail.com", user_agent: undefined }), ctx());
+    expect(ids(r)).toEqual(["dot_alias"]);
+    expect(r.decision).toBe("allow");
   });
   it("non-string email is invalid", async () => {
     expect((await runChecks(input({ email: 5 as unknown as string }), ctx())).decision).toBe("block");

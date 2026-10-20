@@ -192,7 +192,7 @@ export function CheckDetailShot() {
   const signals: [string, number, string][] = [
     ["email_reuse", 35, "nico@gmail.com already signed up 4 times"],
     ["plus_alias", 10, "Uses a +alias of n.ico@gmail.com"],
-    ["dot_alias", 10, "Dots in a Gmail address are ignored by Gmail"],
+    ["dot_alias", 5, "Dots in a Gmail address are ignored by Gmail"],
   ];
   return (
     <AppWindow active="checks" framed linkTabs={false}>
@@ -206,7 +206,7 @@ export function CheckDetailShot() {
             <DecisionBadge decision="challenge" />
           </div>
           <div className="mt-3 border-t border-line pt-2">
-            <KV k="Score" v="55 of 100" />
+            <KV k="Score" v="50 of 100" />
             <KV k="Normalized" v="nico@gmail.com" mono />
             <KV k="IP" v="84.12.200.31" mono />
             <KV k="Device" v="Safari on macOS" />

@@ -144,7 +144,9 @@ export async function runChecks(input: CheckInput, ctx: EngineContext): Promise<
   if (emailCount !== null && emailCount >= 2) {
     add({ id: "email_reuse", points: 35, detail: "This email was already checked in the last 30 days" });
   }
-  const bot = botUserAgent(input.user_agent);
+  // A caller that does not send user_agent (e.g. a server-side webhook) is not evidence of a bot; only an
+  // explicitly empty or automated user agent is.
+  const bot = typeof input.user_agent === "string" ? botUserAgent(input.user_agent) : null;
   if (bot) {
     add({
       id: "bot_user_agent",
@@ -169,7 +171,7 @@ export async function runChecks(input: CheckInput, ctx: EngineContext): Promise<
     add({ id: "plus_alias", points: 10, detail: "Email uses a +tag alias" });
   }
   if (parsed.dotAlias) {
-    add({ id: "dot_alias", points: 10, detail: "Gmail address uses dots to create an alias" });
+    add({ id: "dot_alias", points: 5, detail: "Gmail address uses dots to create an alias" });
   }
 
   // Array.prototype.sort is stable, so equal-point signals keep their evaluation order.
