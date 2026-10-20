@@ -66,7 +66,7 @@ export async function POST(req: Request) {
     {
       id: "clerk",
       label: "Clerk",
-      intro: "Add a user.created webhook. Blocked users are banned, challenged users get publicMetadata.gatekeep = \"challenge\".",
+      intro: "Two parts: a pre-check route your sign-up page calls (real IP, stops blocked signups early) and a user.created webhook as server-side enforcement (bans blocked users, flags challenged ones).",
       steps: [
         { title: "Install", lang: "bash", code: "npm install gatekeep-sdk svix" },
         {
@@ -74,7 +74,7 @@ export async function POST(req: Request) {
           lang: "ts",
           code: `import { Webhook } from "svix";
 import { clerkClient } from "@clerk/nextjs/server";
-import { createGatekeep, getClientIp } from "gatekeep-sdk";
+import { createGatekeep } from "gatekeep-sdk";
 import { handleClerkUserCreated } from "gatekeep-sdk/clerk";
 
 const gatekeep = createGatekeep({ apiKey: process.env.GATEKEEP_API_KEY!, baseUrl: "${base}" });
@@ -88,15 +88,36 @@ export async function POST(req: Request) {
   }) as { type: string; data: any };
 
   if (event.type === "user.created") {
-    await handleClerkUserCreated({
-      gatekeep,
-      clerk: await clerkClient(),
-      event,
-      ip: getClientIp(req.headers),
-    });
+    // Server-side enforcement by email. No ip here: this request comes from Clerk/Svix, not the user.
+    await handleClerkUserCreated({ gatekeep, clerk: await clerkClient(), event });
   }
   return new Response("ok");
 }`,
+        },
+        {
+          title: "app/api/gatekeep/precheck/route.ts (real client IP)",
+          lang: "ts",
+          code: `// Webhooks never carry the user's IP, so call this from your sign-up page before signUp.create.
+import { createGatekeep } from "gatekeep-sdk";
+import { createPrecheckHandler } from "gatekeep-sdk/precheck";
+
+export const POST = createPrecheckHandler({
+  gatekeep: createGatekeep({ apiKey: process.env.GATEKEEP_API_KEY!, baseUrl: "${base}" }),
+});
+// Responds { decision } only. Reads the real IP and user agent from the request.`,
+        },
+        {
+          title: "Sign-up page: call it before signUp.create",
+          lang: "ts",
+          code: `const res = await fetch("/api/gatekeep/precheck", {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ email, device_id: window.gatekeep?.deviceId() }),
+});
+const { decision } = await res.json();
+if (decision === "block") return setError("We couldn't create this account.");
+if (decision === "challenge") return router.push("/verify-phone");
+await signUp.create({ emailAddress: email, password });`,
         },
         {
           title: "Handle challenged users (optional)",
@@ -130,6 +151,7 @@ export const POST = createSupabaseBeforeUserCreatedHandler({
 Type: HTTPS, URL: https://your-app.com/api/auth-hook
 Generate the secret and save it as SUPABASE_BEFORE_USER_CREATED_SECRET.
 Blocked signups get HTTP 400 {"error":{"http_code":400,"message":"..."}}.
+A wrong or rotated secret makes the hook return 401 and Supabase rejects ALL signups. Rotate with care (see the SDK README).
 The hook cannot modify the user, so challenges are allowed through (use onChallenge to follow up).`,
         },
       ],

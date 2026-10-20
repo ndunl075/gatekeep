@@ -3,7 +3,7 @@ import type { CheckResult, Gatekeep } from "./types";
 /** Minimal slice of the Auth.js `signIn` callback params. */
 export interface SignInParams {
   user: { email?: string | null; name?: string | null };
-  account?: { provider?: string } | null;
+  account?: { provider?: string; type?: string } | null;
   /** True on the first email-provider request (before the magic link is sent). */
   email?: { verificationRequest?: boolean } | null;
   [key: string]: unknown;
@@ -41,8 +41,11 @@ export function withGatekeep<P extends SignInParams = SignInParams>(
     const email = params.user?.email;
     const provider = params.account?.provider;
     const skip = !email || (provider === "credentials" && !opts.includeCredentials);
-    // For the email provider, signIn runs twice; only check the request, not the click on the link.
-    const emailClick = provider === "email" && !params.email?.verificationRequest;
+    // Email-link flows call signIn twice: once when the link is requested (`email.verificationRequest`),
+    // once when it is clicked (the user already exists). Auth.js v4 names the provider "email", v5 uses
+    // "nodemailer" / "resend" / ..., so detect the flow by account.type and the `email` param, not the id.
+    const isEmailFlow = params.email !== undefined || params.account?.type === "email" || provider === "email";
+    const emailClick = isEmailFlow && !params.email?.verificationRequest;
 
     if (!skip && !emailClick) {
       try {

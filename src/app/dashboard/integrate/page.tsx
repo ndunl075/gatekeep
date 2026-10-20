@@ -2,6 +2,7 @@ import { headers } from "next/headers";
 import Link from "next/link";
 import { AppContent } from "@/components/ui/app-window";
 import { MonoLabel, PageTitle, Panel, PanelHeader } from "@/components/ui";
+import { env } from "@/lib/env";
 import { getSnippets } from "@/lib/snippets";
 import { StackGuide } from "./stack-guide";
 
@@ -11,7 +12,8 @@ export default async function IntegratePage() {
   const h = await headers();
   const host = h.get("x-forwarded-host") ?? h.get("host") ?? "localhost:3000";
   const proto = h.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https");
-  const baseUrl = `${proto}://${host}`;
+  // Prefer the configured public URL; env.appUrl falls back to localhost when unset, so check the raw var.
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL ? env.appUrl : `${proto}://${host}`;
 
   return (
     <AppContent>

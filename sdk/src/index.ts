@@ -66,7 +66,12 @@ export function createGatekeep(opts: GatekeepOptions): Gatekeep {
             return failOpen(`http_${res.status}`, started, email);
           }
           if (!res.ok) return failOpen(`http_${res.status}`, started, email);
-          const data = (await res.json()) as CheckResult;
+          let data: CheckResult;
+          try {
+            data = (await res.json()) as CheckResult;
+          } catch {
+            return failOpen("invalid_json", started, email);
+          }
           if (!data || typeof data.decision !== "string" || !["allow", "challenge", "block"].includes(data.decision)) {
             return failOpen("invalid_response", started, email);
           }

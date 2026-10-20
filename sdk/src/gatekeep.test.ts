@@ -3,6 +3,7 @@ import { createGatekeep, getClientIp } from "./index";
 import { handleClerkUserCreated } from "./clerk";
 import { createSupabaseBeforeUserCreatedHandler, verifyStandardWebhook } from "./supabase";
 import { withGatekeep } from "./nextauth";
+import { createPrecheckHandler } from "./precheck";
 import type { CheckResult, Decision, Gatekeep } from "./types";
 
 const result = (decision: Decision, extra: Partial<CheckResult> = {}): CheckResult => ({
@@ -49,7 +50,7 @@ describe("createGatekeep", () => {
     const gj = createGatekeep({ apiKey: "k", fetch: (async () => new Response("<html>", { status: 200 })) as typeof fetch });
     const r = await gj.check({ email: "a@b.com" });
     expect(r.decision).toBe("allow");
-    expect(r.error).toBeTruthy();
+    expect(r.error).toBe("invalid_json");
     const gs = createGatekeep({ apiKey: "k", fetch: (async () => jsonRes(200, { nope: 1 })) as typeof fetch });
     expect((await gs.check({ email: "a@b.com" })).error).toBe("invalid_response");
   });
@@ -110,10 +111,17 @@ describe("handleClerkUserCreated", () => {
   it("bans on block, using the primary email", async () => {
     const c = clerk();
     const gatekeep = stub("block");
-    const r = await handleClerkUserCreated({ gatekeep, clerk: c, event, ip: "1.2.3.4" });
+    const r = await handleClerkUserCreated({ gatekeep, clerk: c, event });
     expect(r.action).toBe("banned");
     expect(c.users.banUser).toHaveBeenCalledWith("user_1");
-    expect(gatekeep.check).toHaveBeenCalledWith(expect.objectContaining({ email: "ann@z.com", name: "Ann Lee", ip: "1.2.3.4" }));
+    expect(gatekeep.check).toHaveBeenCalledWith(expect.objectContaining({ email: "ann@z.com", name: "Ann Lee" }));
+  });
+  it("sends no ip from the webhook request", async () => {
+    const gatekeep = stub("allow");
+    await handleClerkUserCreated({ gatekeep, clerk: clerk(), event, userAgent: "ua" });
+    const arg = vi.mocked(gatekeep.check).mock.calls[0][0];
+    expect(arg).not.toHaveProperty("ip", expect.anything());
+    expect(arg.user_agent).toBe("ua");
   });
   it("deletes on block when asked", async () => {
     const c = clerk();
@@ -195,6 +203,14 @@ describe("Supabase before-user-created handler", () => {
     expect(typeof j.error.message).toBe("string");
     expect(gatekeep.check).toHaveBeenCalledWith(expect.objectContaining({ email: "t@mailinator.com", ip: "9.9.9.9", name: "T", user_agent: "supabase-auth" }));
   });
+  it("ignores hook request headers for the ip and uses only the payload", async () => {
+    const gatekeep = stub("allow");
+    const h = createSupabaseBeforeUserCreatedHandler({ gatekeep, hookSecret, now: () => now });
+    const req = await signed({ user: { email: "a@b.com" } });
+    req.headers.set("x-forwarded-for", "10.0.0.1");
+    await h(req);
+    expect(vi.mocked(gatekeep.check).mock.calls[0][0].ip).toBeUndefined();
+  });
   it("allows with {} and calls onChallenge", async () => {
     const onChallenge = vi.fn();
     const h = createSupabaseBeforeUserCreatedHandler({ gatekeep: stub("challenge"), hookSecret, onChallenge, now: () => now });
@@ -241,6 +257,19 @@ describe("withGatekeep (NextAuth)", () => {
     expect(g.check).not.toHaveBeenCalled();
     expect(await withGatekeep({ gatekeep: g })({ user: { email: "a@b.com" }, account: { provider: "email" }, email: { verificationRequest: true } })).toBe(false);
   });
+  it("checks the link request but not the click, for v4 (email) and v5 (nodemailer, resend) shapes", async () => {
+    for (const [provider, type] of [["email", "email"], ["nodemailer", "email"], ["resend", "email"]]) {
+      const g = stub("block");
+      const wrapped = withGatekeep({ gatekeep: g });
+      // click-through of an existing user: no `email` param
+      expect(await wrapped({ user: { email: "a@b.com" }, account: { provider, type } })).toBe(true);
+      expect(await wrapped({ user: { email: "a@b.com" }, account: { provider, type }, email: { verificationRequest: false } })).toBe(true);
+      expect(g.check).not.toHaveBeenCalled();
+      // link request
+      expect(await wrapped({ user: { email: "a@b.com" }, account: { provider, type }, email: { verificationRequest: true } })).toBe(false);
+      expect(g.check).toHaveBeenCalledTimes(1);
+    }
+  });
   it("passes request info and fails open if the check throws", async () => {
     const g = stub("allow");
     await withGatekeep({ gatekeep: g, getRequestInfo: () => ({ ip: "1.1.1.1", userAgent: "ua" }) })(params);
@@ -248,5 +277,27 @@ describe("withGatekeep (NextAuth)", () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const bad: Gatekeep = { check: async () => { throw new Error("x"); } };
     expect(await withGatekeep({ gatekeep: bad })(params)).toBe(true);
+  });
+});
+
+describe("createPrecheckHandler", () => {
+  const post = (body: unknown, headers: Record<string, string> = {}) =>
+    new Request("https://app.test/api/gatekeep/precheck", { method: "POST", body: JSON.stringify(body), headers });
+
+  it("uses the real client ip, ua and device id and returns only the decision", async () => {
+    const gatekeep: Gatekeep = { check: vi.fn(async () => result("block", { score: 90, reason: "secret" })) };
+    const res = await createPrecheckHandler({ gatekeep })(
+      post({ email: "a@b.com", device_id: "d1", name: "A" }, { "x-forwarded-for": "7.7.7.7, 10.0.0.1", "user-agent": "Mozilla" }),
+    );
+    expect(await res.json()).toEqual({ decision: "block" });
+    expect(gatekeep.check).toHaveBeenCalledWith({ email: "a@b.com", ip: "7.7.7.7", user_agent: "Mozilla", device_id: "d1", name: "A" });
+  });
+  it("fails open on bad bodies and gatekeep errors", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const gatekeep: Gatekeep = { check: vi.fn(async () => { throw new Error("x"); }) };
+    const h = createPrecheckHandler({ gatekeep });
+    expect(await (await h(post({ email: "a@b.com" }))).json()).toEqual({ decision: "allow" });
+    expect(await (await h(new Request("https://app.test/x", { method: "POST", body: "nope" }))).json()).toEqual({ decision: "allow" });
+    expect(await (await h(post({}))).json()).toEqual({ decision: "allow" });
   });
 });

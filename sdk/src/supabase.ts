@@ -1,4 +1,3 @@
-import { getClientIp } from "./index";
 import type { Gatekeep } from "./types";
 
 const enc = new TextEncoder();
@@ -95,7 +94,7 @@ export function createSupabaseBeforeUserCreatedHandler(opts: SupabaseHookOptions
       const um = payload.user?.user_metadata;
       const result = await opts.gatekeep.check({
         email,
-        ip: payload.metadata?.ip_address || getClientIp(req.headers),
+        ip: payload.metadata?.ip_address,
         user_agent: req.headers.get("user-agent") ?? undefined,
         name: um?.full_name ?? um?.name,
       });

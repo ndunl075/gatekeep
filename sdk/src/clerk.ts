@@ -25,8 +25,8 @@ export interface HandleClerkUserCreatedOptions {
   gatekeep: Gatekeep;
   clerk: ClerkLike;
   event: ClerkUserCreatedEvent;
-  /** Client IP, if you captured it (Clerk webhooks do not include it). */
-  ip?: string;
+  // No `ip` option on purpose: a Clerk webhook request comes from Svix, so its source IP is the same for
+  // every signup and would poison ip_velocity. Send the real IP from a pre-check route instead.
   userAgent?: string;
   deviceId?: string;
   /** On block, delete the user instead of banning. Default false (ban). */
@@ -48,7 +48,6 @@ export async function handleClerkUserCreated(o: HandleClerkUserCreatedOptions): 
   const name = [data.first_name, data.last_name].filter(Boolean).join(" ") || undefined;
   const result = await o.gatekeep.check({
     email: primary.email_address,
-    ip: o.ip,
     user_agent: o.userAgent,
     device_id: o.deviceId,
     name,
