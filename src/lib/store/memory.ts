@@ -76,11 +76,15 @@ export class MemoryStore implements Store {
       .sort((a, b) => b.created_at.localeCompare(a.created_at));
   }
   async insertKey(key: ApiKey) {
+    // Same as the database: ids and key hashes are unique.
+    if (this.keys.has(key.id) || [...this.keys.values()].some((k) => k.key_hash === key.key_hash)) {
+      throw new Error("duplicate api key");
+    }
     this.keys.set(key.id, key);
   }
   async revokeKey(projectId: string, keyId: string) {
     const k = this.keys.get(keyId);
-    if (k && k.project_id === projectId) this.keys.set(keyId, { ...k, revoked_at: new Date().toISOString() });
+    if (k && k.project_id === projectId && !k.revoked_at) this.keys.set(keyId, { ...k, revoked_at: new Date().toISOString() });
   }
   async touchKey(keyId: string) {
     const k = this.keys.get(keyId);
@@ -88,10 +92,11 @@ export class MemoryStore implements Store {
   }
 
   async insertCheck(log: CheckLog) {
+    if (this.checks.some((c) => c.id === log.id)) throw new Error("duplicate check id");
     this.checks.push(log);
   }
   async listChecks(projectId: string, opts: ListChecksOptions = {}) {
-    const q = opts.search?.toLowerCase();
+    const q = opts.search?.trim().toLowerCase();
     return this.checks
       .filter(
         (c) =>
