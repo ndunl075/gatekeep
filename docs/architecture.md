@@ -13,13 +13,26 @@ Authorization: Bearer gk_live_...
         "normalized_email", "latency_ms" }
 ```
 
-1. `readKeyFromHeaders` → `hashKey` → `store.findKeyByHash` → project. 401 if missing/invalid.
-2. Quota: `store.monthlyUsage(project) >= PLANS[plan].checksPerMonth` → still run the check but add
-   `"quota_exceeded": true` to the response. **Fail open**: gatekeep must never break a customer's signup.
-3. `runChecks(input, ctx)` (engine) → score, signals, decision.
-4. `store.insertCheck(log)`, `store.touchKey`. Respond. Target p50 < 150ms; MX lookups have a 1.5s timeout and
-   are cached.
-5. Errors inside gatekeep return `decision: "allow"` with `"error"` set, never a 5xx for engine failures.
+1. `readKeyFromHeaders` → `hashKey` → `store.findKeyByHash` → project. 401 if missing/revoked. Non-JSON body → 400
+   (before this step), oversized body (>16 KB) → 413.
+2. Per-key rate limit: 600 requests/minute via counters (`gk:rl:{keyId}`) → 429 + `Retry-After`. If the counters
+   backend fails, an in-process limiter takes over (fail open). Then the body is validated with zod → 400
+   `{error:"invalid_request", message}`; unknown fields are ignored.
+3. Quota: `store.monthlyUsage(project) >= PLANS[plan].checksPerMonth` → still run the check but add
+   `"quota_exceeded": true` to the response. The usage count is cached per project for 30s. **Fail open**:
+   gatekeep must never break a customer's signup.
+4. `runChecks(input, ctx)` (engine) → score, signals, decision. `degraded` markers are logged (at most once a
+   minute per marker).
+5. `store.insertCheck(log)` and `store.touchKey` run in `after()` so the response is not blocked (`touchKey` at most
+   once a minute per key). Respond with `Cache-Control: no-store` and `X-Gatekeep-Latency`. Target p50 < 150ms; MX
+   lookups have a 1.5s timeout and are cached (1h; 5 min when unknown). A `no_mx` answer is only trusted while a DNS
+   canary (gmail.com) resolves, so a broken resolver cannot flag every domain.
+6. Errors inside gatekeep (including the store being down) return `decision: "allow"` with `"error"` set, never a 5xx.
+
+Counters: Upstash Redis (sorted set per key) → Postgres counts over `checks` (when Supabase is set but Upstash is
+not) → in-memory. `GET /api/v1/health` reports which are active (503 when production is unconfigured).
+`POST /check` is a rewrite to `/api/v1/check`. The dashboard Integrate page has a playground that calls
+`runCheckForProject` (dry run or recorded) for the signed-in user's project.
 
 ## Engine contract (`src/lib/engine/index.ts`)
 
