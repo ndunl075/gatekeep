@@ -14,7 +14,8 @@ export type ProjectPatch = Partial<
 >;
 
 export interface BillingPatch {
-  plan: PlanId;
+  /** Omit to leave the plan as it is (callers that only link a Stripe customer must not write a stale plan). */
+  plan?: PlanId;
   stripe_customer_id?: string | null;
   stripe_subscription_id?: string | null;
 }
