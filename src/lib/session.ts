@@ -48,9 +48,9 @@ export const getCurrentProject = cache(async (): Promise<Project> => {
   const existing = await store.listProjectsForOwner(user.id);
   if (existing.length > 0) return existing[0];
 
-  // First visit: give the user a project. (A first API key is created by the dashboard, not here.)
-  const created = await store.createProject(user.id, "My app");
-  // Two first requests can race and both create one. Both then agree on the oldest.
-  const all = await store.listProjectsForOwner(user.id);
-  return all[0] ?? created;
+  // First visit: give the user a project, atomically so concurrent first requests share one.
+  // A first API key is not created here; the dashboard does that.
+  return store.ensureProject
+    ? store.ensureProject(user.id, "My app")
+    : (await store.listProjectsForOwner(user.id))[0] ?? (await store.createProject(user.id, "My app"));
 });

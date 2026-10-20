@@ -119,6 +119,12 @@ export class SupabaseStore implements Store {
     return toProject(data);
   }
 
+  async ensureProject(ownerId: string, name: string) {
+    const { data, error } = await this.db.rpc("gatekeep_ensure_project", { p_owner: ownerId, p_name: name });
+    if (error) this.fail("ensureProject", error);
+    return toProject((Array.isArray(data) ? data[0] : data) as Row);
+  }
+
   private async patchProject(op: string, projectId: string, patch: object) {
     const values = defined(patch);
     if (Object.keys(values).length === 0) {

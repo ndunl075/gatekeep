@@ -6,7 +6,8 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 export async function POST(request: NextRequest) {
   if (hasSupabase()) {
     const supabase = await createSupabaseServerClient();
-    await supabase.auth.signOut();
+    // Local scope: end this browser's session only, not every device the user is signed in on.
+    await supabase.auth.signOut({ scope: "local" });
   }
   const url = request.nextUrl.clone();
   url.pathname = "/";

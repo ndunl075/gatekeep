@@ -135,6 +135,20 @@ export function runStoreConformance(name: string, setup: () => Promise<Conforman
       });
     });
 
+    describe("ensureProject", () => {
+      it("creates one project per owner, even when called concurrently", async () => {
+        if (!store.ensureProject) return;
+        const owner = await h.newOwnerId();
+        const results = await Promise.all([1, 2, 3, 4].map(() => store.ensureProject!(owner, "My app")));
+        expect(new Set(results.map((p) => p.id)).size).toBe(1);
+        expect(results[0]).toMatchObject({ owner_id: owner, name: "My app" });
+        expect(await store.listProjectsForOwner(owner)).toHaveLength(1);
+        // An owner with a project gets their oldest back and nothing new is created.
+        expect((await store.ensureProject(owner, "Other")).id).toBe(results[0].id);
+        expect(await store.listProjectsForOwner(owner)).toHaveLength(1);
+      });
+    });
+
     describe("api keys", () => {
       it("finds an active key by hash and returns every field", async () => {
         const p = await newProject();
@@ -259,6 +273,13 @@ export function runStoreConformance(name: string, setup: () => Promise<Conforman
         expect(page3.map((c) => c.id)).toEqual(newestFirst.slice(4));
       });
 
+      it("clamps limit to at least 1", async () => {
+        const p = await newProject();
+        for (let i = 0; i < 3; i++) await store.insertCheck(makeCheck(p.id));
+        expect(await store.listChecks(p.id, { limit: 0 })).toHaveLength(1);
+        expect(await store.listChecks(p.id, { limit: -5 })).toHaveLength(1);
+      });
+
       it("filters by decision", async () => {
         const p = await newProject();
         const decisions: Decision[] = ["allow", "block", "challenge", "block"];
@@ -333,6 +354,24 @@ export function runStoreConformance(name: string, setup: () => Promise<Conforman
         const empty = await store.dailyStats((await newProject()).id, 3);
         expect(empty).toHaveLength(3);
         expect(empty.every((s) => s.allow + s.challenge + s.block === 0)).toBe(true);
+      });
+
+      it("clamps days to 1..366", async () => {
+        const p = await newProject();
+        await store.insertCheck(makeCheck(p.id, { created_at: at(-1), signals: [sig("no_mx", 70)] }));
+        await store.insertCheck(makeCheck(p.id, { created_at: new Date().toISOString(), signals: [sig("plus_alias")] }));
+        const one = await store.dailyStats(p.id, 0);
+        expect(one.map((s) => s.date)).toEqual([utcDay(0)]);
+        expect(await store.dailyStats(p.id, -3)).toHaveLength(1);
+        expect(await store.dailyStats(p.id, 100_000)).toHaveLength(366);
+        // days=0 behaves like days=1: today only.
+        expect(await store.topSignals(p.id, 0)).toEqual([{ id: "plus_alias", count: 1 }]);
+      });
+
+      it("orders equally frequent signals by id", async () => {
+        const p = await newProject();
+        await store.insertCheck(makeCheck(p.id, { signals: [sig("plus_alias"), sig("no_mx", 70), sig("bot_user_agent", 30)] }));
+        expect((await store.topSignals(p.id, 7)).map((t) => t.id)).toEqual(["bot_user_agent", "no_mx", "plus_alias"]);
       });
 
       it("counts this UTC month only, scoped to the project", async () => {

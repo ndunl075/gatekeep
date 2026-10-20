@@ -49,6 +49,10 @@ async function addCheck(project: string, decision: string, at: string, signals =
   );
 }
 
+// Booting PGlite and applying the migration takes ~10s when test files run in parallel; vitest's default hook
+// timeout is 10s.
+const SETUP_TIMEOUT = 60_000;
+
 beforeAll(async () => {
   db = new PGlite();
   await db.exec(SUPABASE_STUBS);
@@ -66,7 +70,7 @@ beforeAll(async () => {
   );
   await addCheck(projA, "allow", new Date().toISOString());
   await addCheck(projB, "block", new Date().toISOString());
-});
+}, SETUP_TIMEOUT);
 
 afterAll(async () => {
   await db.close();
@@ -183,8 +187,46 @@ describe("row level security", () => {
         await expect(db.query("select public.gatekeep_monthly_usage($1)", [projA])).rejects.toThrow(/permission denied/);
         await expect(db.query("select * from public.gatekeep_daily_stats($1, 7)", [projA])).rejects.toThrow(/permission denied/);
         await expect(db.query("select * from public.gatekeep_top_signals($1, 7)", [projA])).rejects.toThrow(/permission denied/);
+        await expect(db.query("select * from public.gatekeep_ensure_project($1, 'x')", [alice])).rejects.toThrow(/permission denied/);
       });
     }
+  });
+});
+
+describe("gatekeep_ensure_project", () => {
+  it("creates one project for a new owner and returns the same one on every later call", async () => {
+    const owner = "44444444-4444-4444-8444-444444444444";
+    await db.query("insert into auth.users (id, email) values ($1, 'carol@x.com')", [owner]);
+    const first = await db.query<{ id: string; owner_id: string; name: string }>(
+      "select * from public.gatekeep_ensure_project($1, 'My app')",
+      [owner],
+    );
+    const second = await db.query<{ id: string }>("select * from public.gatekeep_ensure_project($1, 'Other name')", [owner]);
+    expect(first.rows[0]).toMatchObject({ owner_id: owner, name: "My app" });
+    expect(second.rows[0].id).toBe(first.rows[0].id);
+    const { rows } = await db.query("select 1 from public.projects where owner_id = $1", [owner]);
+    expect(rows).toHaveLength(1);
+  });
+
+  it("returns the oldest project when the owner already has several", async () => {
+    const { rows } = await db.query<{ id: string }>("select * from public.gatekeep_ensure_project($1, 'x')", [alice]);
+    const oldest = await db.query<{ id: string }>(
+      "select id from public.projects where owner_id = $1 order by created_at, id limit 1",
+      [alice],
+    );
+    expect(rows[0].id).toBe(oldest.rows[0].id);
+  });
+
+  it("is race-free: concurrent first visits yield one row", async () => {
+    // PGlite runs one connection, so this only proves the logic under interleaved calls; the advisory lock is what
+    // serializes real concurrent sessions.
+    const owner = "55555555-5555-4555-8555-555555555555";
+    await db.query("insert into auth.users (id, email) values ($1, 'dave@x.com')", [owner]);
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => db.query<{ id: string }>("select * from public.gatekeep_ensure_project($1, 'My app')", [owner])),
+    );
+    expect(new Set(results.map((r) => r.rows[0].id)).size).toBe(1);
+    expect((await db.query("select 1 from public.projects where owner_id = $1", [owner])).rows).toHaveLength(1);
   });
 });
 

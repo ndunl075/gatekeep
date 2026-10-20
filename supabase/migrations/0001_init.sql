@@ -171,9 +171,31 @@ as $$
   order by n desc, signal_id;
 $$;
 
+-- The owner's oldest project, created on first use. The advisory lock serializes concurrent first visits for the
+-- same owner, so they cannot each insert one (the table deliberately allows many projects per owner).
+create function public.gatekeep_ensure_project(p_owner uuid, p_name text)
+returns public.projects
+language plpgsql
+set search_path = public, pg_temp
+as $$
+declare
+  result public.projects;
+begin
+  perform pg_advisory_xact_lock(hashtextextended(p_owner::text, 0));
+  select * into result from public.projects where owner_id = p_owner order by created_at, id limit 1;
+  if found then
+    return result;
+  end if;
+  insert into public.projects (owner_id, name) values (p_owner, p_name) returning * into result;
+  return result;
+end;
+$$;
+
 revoke all on function public.gatekeep_daily_stats(uuid, integer) from public, anon, authenticated;
 revoke all on function public.gatekeep_monthly_usage(uuid) from public, anon, authenticated;
 revoke all on function public.gatekeep_top_signals(uuid, integer) from public, anon, authenticated;
+revoke all on function public.gatekeep_ensure_project(uuid, text) from public, anon, authenticated;
 grant execute on function public.gatekeep_daily_stats(uuid, integer) to service_role;
 grant execute on function public.gatekeep_monthly_usage(uuid) to service_role;
 grant execute on function public.gatekeep_top_signals(uuid, integer) to service_role;
+grant execute on function public.gatekeep_ensure_project(uuid, text) to service_role;

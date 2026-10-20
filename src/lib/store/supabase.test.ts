@@ -83,6 +83,13 @@ describe("SupabaseStore scoping", () => {
     for (const r of rpcs) expect((r.args as { p_project_id: string }).p_project_id).toBe(P);
   });
 
+  it("ensures a project through the locking SQL function, keyed by owner", async () => {
+    const { client, rpcs } = fakeClient({ data: projectRow, error: null });
+    const p = await new SupabaseStore(client).ensureProject("owner-1", "My app");
+    expect(rpcs).toEqual([{ fn: "gatekeep_ensure_project", args: { p_owner: "owner-1", p_name: "My app" } }]);
+    expect(p.id).toBe(P);
+  });
+
   it("throws, with the operation named, when Supabase returns an error", async () => {
     const { client } = fakeClient({ data: null, error: { message: "boom" } });
     const store = new SupabaseStore(client);
