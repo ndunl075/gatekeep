@@ -15,7 +15,7 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
   const project = await getCurrentProject();
   const used = await getStore().monthlyUsage(project.id);
   const usage = usageSummary(project.plan, used);
-  const { configured, prices } = billingAvailability();
+  const { configured, demo, prices } = billingAvailability();
 
   return (
     <AppContent>
@@ -32,13 +32,19 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
           Nothing was charged. Try again, and if it keeps happening contact support.
         </Notice>
       )}
-      {!configured && (
+      {demo && (
+        <Notice tone="info" title="Billing is not available in demo mode">
+          The demo project is shared and has no login, so it can never be tied to a real Stripe customer. Sign in to a
+          real deployment to manage a plan.
+        </Notice>
+      )}
+      {!demo && !configured && (
         <Notice tone="info" title="Billing is not configured">
           Paid plans are off because STRIPE_SECRET_KEY is not set. Checks work normally on the {project.plan} plan.
           See docs/stripe.md to turn billing on.
         </Notice>
       )}
-      {configured && (!prices.pro || !prices.scale) && (
+      {!demo && configured && (!prices.pro || !prices.scale) && (
         <Notice tone="warn" title="Some plans are not set up">
           Set {[!prices.pro && "STRIPE_PRICE_PRO", !prices.scale && "STRIPE_PRICE_SCALE"].filter(Boolean).join(" and ")}{" "}
           to enable upgrades. Run scripts/stripe-setup.mjs to create the prices.
@@ -52,6 +58,7 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
           hasSubscription={Boolean(project.stripe_subscription_id)}
           hasCustomer={Boolean(project.stripe_customer_id)}
           configured={configured}
+          readOnly={demo}
           prices={prices}
         />
       </div>

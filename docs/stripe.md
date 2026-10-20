@@ -55,7 +55,8 @@ npm run dev
 stripe trigger customer.subscription.deleted                    # unknown project: ignored with a 200
 ```
 
-`stripe trigger` fixtures carry no `project_id`, so they are ignored; the real checkout flow is the end-to-end test.
+`stripe trigger` fixtures belong to no project, so they are ignored; the real checkout flow is the end-to-end test
+(it needs a real sign-in, see Demo mode).
 Automated tests (`npm test`) cover the mapping, every event type and signature checking offline.
 
 ## Early customers: 3 months free
@@ -64,13 +65,30 @@ Share the code `EARLY3`. Checkout has `allow_promotion_codes` on, so they enter 
 checkout still creates the subscription (and still asks for a card unless you change that in Stripe), and the plan
 is granted by the same subscription events. After the 3 months the card is charged.
 
-## How events change a plan
+## How events change a plan (sync model)
 
-| Event | Effect |
-|---|---|
-| `checkout.session.completed` | links the Stripe customer and subscription id to the project |
-| `customer.subscription.created` / `updated` | `active`, `trialing`, `past_due` → plan of the price; any other status → Free |
-| `customer.subscription.deleted` | Free, subscription id cleared |
+Stripe delivers events out of order and retries them for days, so an event never decides the plan by itself.
+For each of the four events the webhook:
 
-Known limits: events are applied in arrival order (a stale `updated` delivered after a newer one could briefly
-show the older state until the next event); an unknown price id leaves the plan unchanged.
+1. finds the project (a customer already linked to a project wins; otherwise `metadata.project_id` /
+   `client_reference_id`). A project linked to a *different* customer is refused and the event ignored.
+2. asks Stripe for that customer's current subscriptions (`subscriptions.list`, status `all`).
+3. picks the best live one (`active`, `trialing` or `past_due`, a price id we know, highest plan first) and sets
+   the project's plan and subscription id from it, or Free with no subscription id when there is none.
+
+Because the result depends on Stripe's state at processing time, replays, duplicates and any ordering of the same
+events end in the same place. If Stripe's API or our database fails, the webhook returns 500 and Stripe retries.
+A live subscription whose price id we do not recognise (a missing `STRIPE_PRICE_*`) leaves the plan unchanged
+instead of downgrading someone who is being charged.
+
+## One subscription per project
+
+Before creating a Checkout session the app asks Stripe whether the customer already has an `active`, `trialing`,
+`past_due`, `incomplete`, `unpaid` or `paused` subscription. If so it sends the user to the customer portal instead,
+so a project is never billed twice.
+
+## Demo mode
+
+With `GATEKEEP_DEMO=1` (or any deploy without Supabase) the single demo project is shared and has no login, so
+checkout and portal answer 503 "Billing is not available in demo mode" and the Billing page shows the plans without
+buttons. Billing only works against a real, signed-in deployment.

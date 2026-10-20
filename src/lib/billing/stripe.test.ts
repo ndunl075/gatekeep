@@ -52,8 +52,9 @@ function fakeStripe() {
   const customers = { create: vi.fn(async () => ({ id: "cus_new" })) };
   const sessions = { create: vi.fn(async () => ({ url: "https://checkout.stripe.test/s" })) };
   const portal = { create: vi.fn(async () => ({ url: "https://portal.stripe.test/p" })) };
-  const stripe = { customers, checkout: { sessions }, billingPortal: { sessions: portal } };
-  return { stripe: stripe as unknown as Stripe, customers, sessions, portal };
+  const subs = { list: vi.fn(async () => ({ data: [] as { id: string; status: string }[] })) };
+  const stripe = { customers, checkout: { sessions }, billingPortal: { sessions: portal }, subscriptions: subs };
+  return { stripe: stripe as unknown as Stripe, customers, sessions, portal, subs };
 }
 
 describe("createCheckoutSession", () => {
@@ -115,6 +116,47 @@ describe("createCheckoutSession", () => {
     const { store, project, stripe, sessions } = await setup();
     sessions.create.mockRejectedValueOnce(new Error("boom"));
     await expect(createCheckoutSession(project, "pro", { stripe, store })).rejects.toThrow("boom");
+  });
+
+  it("persists only the customer id, never a plan read earlier in the request", async () => {
+    const { store, project, stripe } = await setup();
+    const spy = vi.spyOn(store, "setBilling");
+    await createCheckoutSession({ ...project, plan: "scale" }, "pro", { stripe, store });
+    expect(spy).toHaveBeenCalledWith(project.id, { stripe_customer_id: "cus_new" });
+    expect((await store.getProject(project.id))?.plan).toBe("free");
+  });
+
+  it.each(["active", "trialing", "past_due", "incomplete", "unpaid", "paused"])(
+    "refuses when Stripe already shows a %s subscription for the customer",
+    async (status) => {
+      const { store, project, stripe, subs, sessions } = await setup();
+      const withCustomer = await store.setBilling(project.id, { stripe_customer_id: "cus_old" });
+      subs.list.mockResolvedValueOnce({ data: [{ id: "sub_x", status }] });
+      await expect(createCheckoutSession(withCustomer, "pro", { stripe, store })).rejects.toMatchObject({
+        code: "already_subscribed",
+      });
+      expect(subs.list).toHaveBeenCalledWith({ customer: "cus_old", status: "all", limit: 10 });
+      expect(sessions.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it("allows checkout when the customer only has dead subscriptions", async () => {
+    const { store, project, stripe, subs, sessions } = await setup();
+    const withCustomer = await store.setBilling(project.id, { stripe_customer_id: "cus_old" });
+    subs.list.mockResolvedValueOnce({
+      data: [
+        { id: "sub_a", status: "canceled" },
+        { id: "sub_b", status: "incomplete_expired" },
+      ],
+    });
+    await expect(createCheckoutSession(withCustomer, "pro", { stripe, store })).resolves.toContain("checkout.stripe.test");
+    expect(sessions.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not list subscriptions for a brand new customer", async () => {
+    const { store, project, stripe, subs } = await setup();
+    await createCheckoutSession(project, "pro", { stripe, store });
+    expect(subs.list).not.toHaveBeenCalled();
   });
 
   it("refuses a second subscription", async () => {

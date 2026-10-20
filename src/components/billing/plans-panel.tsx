@@ -14,15 +14,18 @@ export interface PlansPanelProps {
   /** Stripe has a customer for this project (the portal needs one). */
   hasCustomer: boolean;
   configured: boolean;
+  /** Demo mode: show the plans but no actions at all. */
+  readOnly?: boolean;
   prices: Record<PaidPlan, boolean>;
 }
 
 function PlanButton({ plan, props }: { plan: PlanId; props: PlansPanelProps }) {
-  const { current, hasSubscription, configured, prices } = props;
+  const { current, hasSubscription, configured, readOnly, prices } = props;
   const action = planAction(current, plan);
   if (action === "current") {
     return <span className="inline-flex h-8 items-center text-[12px] text-muted">Your current plan</span>;
   }
+  if (readOnly) return null;
   const label = action === "upgrade" ? "Upgrade" : "Downgrade";
   if (!configured) return <Button disabled>{label}</Button>;
 
@@ -57,7 +60,7 @@ export function PlansPanel(props: PlansPanelProps) {
         title="Plans"
         subtitle="Monthly, cancel anytime"
         right={
-          configured && hasCustomer ? (
+          configured && hasCustomer && !props.readOnly ? (
             <form action="/api/stripe/portal" method="post">
               <Button type="submit" variant="ghost">
                 Manage or cancel

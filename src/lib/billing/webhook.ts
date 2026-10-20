@@ -1,10 +1,15 @@
-// Applies Stripe webhook events to the store. Pure with respect to Stripe: it only reads the event payload,
-// never calls the Stripe API, so it is fully testable offline. Safe to run twice for the same event.
+// Applies Stripe webhook events to the store.
+//
+// Stripe does not deliver events in order and retries them for days, so an event payload never decides the plan.
+// An event only says "something changed for this customer": we then read the customer's CURRENT subscriptions from
+// Stripe and recompute the project's billing from them. Replays, reordering and duplicates all converge on the same
+// result because the answer depends on Stripe's state now, not on which event arrived last.
 import type Stripe from "stripe";
 import { PLAN_ORDER } from "../plans";
 import type { Store } from "../store/types";
 import type { PlanId, Project } from "../types";
 import { planForPriceId } from "./stripe";
+import { LIVE_STATUSES } from "./statuses";
 
 export interface ApplyResult {
   /** True when the event type is one we act on (even if it changed nothing). */
@@ -17,31 +22,18 @@ export interface ApplyResult {
   reason?: string;
 }
 
-/** Subscription states that keep the paid plan. past_due keeps it while Stripe retries the card. */
-const PAID_STATUSES = new Set<Stripe.Subscription.Status>(["active", "trialing", "past_due"]);
-/** Terminal states: the subscription can never come back, so its id is cleared. */
-const DEAD_STATUSES = new Set<Stripe.Subscription.Status>(["canceled", "incomplete_expired"]);
+/** The slice of the Stripe client the sync needs; tests pass a fake. */
+export interface StripeSubscriptions {
+  subscriptions: {
+    list(params: Stripe.SubscriptionListParams): PromiseLike<{ data: Stripe.Subscription[] }>;
+  };
+}
 
 type Ref = string | { id: string } | null | undefined;
 
 function idOf(ref: Ref): string | null {
   if (!ref) return null;
   return typeof ref === "string" ? ref : ref.id;
-}
-
-async function findProject(
-  store: Store,
-  metadata: Stripe.Metadata | null | undefined,
-  customerId: string | null,
-  clientReferenceId?: string | null,
-): Promise<Project | null> {
-  // The project id in metadata was set by us when we created the session / subscription.
-  const candidates = [metadata?.project_id, clientReferenceId].filter((v): v is string => Boolean(v));
-  for (const id of candidates) {
-    const p = await store.getProject(id);
-    if (p) return p;
-  }
-  return customerId ? store.getProjectByStripeCustomer(customerId) : null;
 }
 
 /** Highest plan granted by any item on the subscription, or null when no price is one of ours. */
@@ -54,95 +46,116 @@ function planFromSubscription(sub: Stripe.Subscription): PlanId | null {
   return best;
 }
 
-async function write(
+/**
+ * The subscription that should grant the plan: live, with a price we know, highest plan first.
+ * Ties go to the earliest in the list, which Stripe returns newest first.
+ */
+export function pickBestSubscription(subs: Stripe.Subscription[]): { sub: Stripe.Subscription; plan: PlanId } | null {
+  let best: { sub: Stripe.Subscription; plan: PlanId } | null = null;
+  for (const sub of subs) {
+    if (!LIVE_STATUSES.has(sub.status)) continue;
+    const plan = planFromSubscription(sub);
+    if (!plan) continue;
+    if (!best || PLAN_ORDER.indexOf(plan) > PLAN_ORDER.indexOf(best.plan)) best = { sub, plan };
+  }
+  return best;
+}
+
+interface Target {
+  customerId: string | null;
+  /** Project ids we stamped on the Stripe objects ourselves. */
+  hints: string[];
+}
+
+function targetOf(event: Stripe.Event): Target | null {
+  switch (event.type) {
+    case "checkout.session.completed": {
+      const s = event.data.object;
+      if (s.mode !== "subscription") return null;
+      return {
+        customerId: idOf(s.customer),
+        hints: [s.metadata?.project_id, s.client_reference_id].filter((v): v is string => Boolean(v)),
+      };
+    }
+    case "customer.subscription.created":
+    case "customer.subscription.updated":
+    case "customer.subscription.deleted": {
+      const s = event.data.object;
+      return { customerId: idOf(s.customer), hints: [s.metadata?.project_id].filter((v): v is string => Boolean(v)) };
+    }
+    default:
+      return null;
+  }
+}
+
+async function resolveProject(
   store: Store,
+  { customerId, hints }: Target,
+): Promise<{ project: Project } | { reason: string }> {
+  // A customer that is already linked to a project always wins over what the payload claims.
+  if (customerId) {
+    const linked = await store.getProjectByStripeCustomer(customerId);
+    if (linked) return { project: linked };
+  }
+  for (const id of hints) {
+    const project = await store.getProject(id);
+    if (!project) continue;
+    // Never attach a second Stripe customer to a project that already has one.
+    if (project.stripe_customer_id && project.stripe_customer_id !== customerId) {
+      console.warn("stripe webhook: customer mismatch for project", project.id);
+      return { reason: "customer mismatch" };
+    }
+    return { project };
+  }
+  return { reason: "no matching project" };
+}
+
+/** Recomputes the project's plan and subscription id from the customer's current Stripe subscriptions. */
+export async function syncProjectBilling(
   project: Project,
-  patch: { plan: PlanId; stripe_customer_id: string | null; stripe_subscription_id: string | null },
+  customerId: string,
+  stripe: StripeSubscriptions,
+  store: Store,
 ): Promise<ApplyResult> {
-  const same =
-    project.plan === patch.plan &&
-    project.stripe_customer_id === patch.stripe_customer_id &&
-    project.stripe_subscription_id === patch.stripe_subscription_id;
-  if (same) return { handled: true, changed: false, projectId: project.id, plan: patch.plan, reason: "already up to date" };
-  await store.setBilling(project.id, patch);
-  return { handled: true, changed: true, projectId: project.id, plan: patch.plan };
-}
+  const { data } = await stripe.subscriptions.list({ customer: customerId, status: "all", limit: 10 });
+  const best = pickBestSubscription(data);
 
-async function onCheckoutCompleted(session: Stripe.Checkout.Session, store: Store): Promise<ApplyResult> {
-  if (session.mode !== "subscription") return { handled: false, changed: false, reason: "not a subscription checkout" };
-  const customerId = idOf(session.customer);
-  const project = await findProject(store, session.metadata, customerId, session.client_reference_id);
-  if (!project) return { handled: true, changed: false, reason: "no matching project" };
-  // The plan comes from the subscription events (they carry the price). Here we only link the Stripe ids.
-  // A fully discounted checkout (promo code) reports no_payment_required, which is fine.
-  if (session.payment_status === "unpaid") {
-    return { handled: true, changed: false, projectId: project.id, reason: "payment not completed" };
-  }
-  return write(store, project, {
-    plan: project.plan,
-    stripe_customer_id: customerId ?? project.stripe_customer_id,
-    stripe_subscription_id: project.stripe_subscription_id ?? idOf(session.subscription),
-  });
-}
-
-async function onSubscriptionChanged(sub: Stripe.Subscription, store: Store): Promise<ApplyResult> {
-  const customerId = idOf(sub.customer);
-  const project = await findProject(store, sub.metadata, customerId);
-  if (!project) return { handled: true, changed: false, reason: "no matching project" };
-
-  const isCurrent = !project.stripe_subscription_id || project.stripe_subscription_id === sub.id;
-  const paid = PAID_STATUSES.has(sub.status);
-
-  if (!isCurrent && !paid) {
-    // A dead or unpaid old subscription must not downgrade the one the project is on now.
-    return { handled: true, changed: false, projectId: project.id, reason: "stale subscription" };
-  }
-
-  const customer = customerId ?? project.stripe_customer_id;
-  if (!paid) {
-    return write(store, project, {
-      plan: "free",
-      stripe_customer_id: customer,
-      stripe_subscription_id: DEAD_STATUSES.has(sub.status) ? null : sub.id,
-    });
-  }
-
-  const plan = planFromSubscription(sub);
-  if (!plan) {
-    // Never guess a plan: an unknown price leaves the project as it was.
+  if (!best && data.some((s) => LIVE_STATUSES.has(s.status))) {
+    // Paying, but with a price id this deployment does not know (env var missing or stale). Never guess a plan
+    // and never downgrade someone who is being charged.
     return { handled: true, changed: false, projectId: project.id, reason: "unknown price" };
   }
-  return write(store, project, { plan, stripe_customer_id: customer, stripe_subscription_id: sub.id });
-}
 
-async function onSubscriptionDeleted(sub: Stripe.Subscription, store: Store): Promise<ApplyResult> {
-  const customerId = idOf(sub.customer);
-  const project = await findProject(store, sub.metadata, customerId);
-  if (!project) return { handled: true, changed: false, reason: "no matching project" };
-  if (project.stripe_subscription_id && project.stripe_subscription_id !== sub.id) {
-    return { handled: true, changed: false, projectId: project.id, reason: "stale subscription" };
+  const next = {
+    plan: best?.plan ?? ("free" as PlanId),
+    stripe_customer_id: customerId,
+    stripe_subscription_id: best?.sub.id ?? null,
+  };
+  if (
+    project.plan === next.plan &&
+    project.stripe_customer_id === next.stripe_customer_id &&
+    project.stripe_subscription_id === next.stripe_subscription_id
+  ) {
+    return { handled: true, changed: false, projectId: project.id, plan: next.plan, reason: "already up to date" };
   }
-  return write(store, project, {
-    plan: "free",
-    stripe_customer_id: customerId ?? project.stripe_customer_id,
-    stripe_subscription_id: null,
-  });
+  await store.setBilling(project.id, next);
+  return { handled: true, changed: true, projectId: project.id, plan: next.plan };
 }
 
 /**
- * Applies one verified Stripe event. Throws only on store failures (the route then answers 500 so Stripe retries);
- * unknown events and events for unknown projects resolve normally.
+ * Handles one verified Stripe event. Throws on store or Stripe API failures (the route then answers 500 so Stripe
+ * retries); unknown events and events for unknown projects resolve normally.
  */
-export async function applyStripeEvent(event: Stripe.Event, store: Store): Promise<ApplyResult> {
-  switch (event.type) {
-    case "checkout.session.completed":
-      return onCheckoutCompleted(event.data.object, store);
-    case "customer.subscription.created":
-    case "customer.subscription.updated":
-      return onSubscriptionChanged(event.data.object, store);
-    case "customer.subscription.deleted":
-      return onSubscriptionDeleted(event.data.object, store);
-    default:
-      return { handled: false, changed: false, reason: "ignored event type" };
-  }
+export async function applyStripeEvent(
+  event: Stripe.Event,
+  store: Store,
+  stripe: StripeSubscriptions,
+): Promise<ApplyResult> {
+  const target = targetOf(event);
+  if (!target) return { handled: false, changed: false, reason: "ignored event" };
+  if (!target.customerId) return { handled: true, changed: false, reason: "no customer on event" };
+
+  const found = await resolveProject(store, target);
+  if ("reason" in found) return { handled: true, changed: false, reason: found.reason };
+  return syncProjectBilling(found.project, target.customerId, stripe, store);
 }

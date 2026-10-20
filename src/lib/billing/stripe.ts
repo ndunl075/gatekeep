@@ -1,8 +1,9 @@
 // Stripe client, plan <-> price mapping, and the checkout / portal session helpers.
 // No "server-only" import so vitest can load this file; it only ever runs on the server (it reads secrets).
 import Stripe from "stripe";
-import { env, hasStripe } from "../env";
+import { env, hasStripe, isDemoMode } from "../env";
 import { getStore } from "../store";
+import { BLOCKING_STATUSES } from "./statuses";
 import type { Store } from "../store/types";
 import type { PlanId, Project } from "../types";
 
@@ -60,9 +61,11 @@ export function planForPriceId(priceId: string | null | undefined): PaidPlan | n
 }
 
 /** What the billing page can offer right now. */
-export function billingAvailability(): { configured: boolean; prices: Record<PaidPlan, boolean> } {
+export function billingAvailability(): { configured: boolean; demo: boolean; prices: Record<PaidPlan, boolean> } {
   return {
     configured: hasStripe(),
+    // Demo mode has one shared, login-less project: it must never be tied to a real Stripe customer.
+    demo: isDemoMode(),
     prices: { pro: Boolean(priceIdForPlan("pro")), scale: Boolean(priceIdForPlan("scale")) },
   };
 }
@@ -101,8 +104,16 @@ async function ensureCustomer(
     // A replayed key returns the same customer for 24h, so a replacement after a stale id needs a fresh key.
     { idempotencyKey: `gatekeep-customer-${project.id}${retry ? `-${Date.now()}` : ""}` },
   );
-  await store.setBilling(project.id, { plan: project.plan, stripe_customer_id: customer.id });
+  await store.setBilling(project.id, { stripe_customer_id: customer.id });
   return customer.id;
+}
+
+/** Asks Stripe, not our database, whether the customer already has (or is starting) a subscription. */
+async function assertNoOpenSubscription(stripe: Stripe, customerId: string): Promise<void> {
+  const { data } = await stripe.subscriptions.list({ customer: customerId, status: "all", limit: 10 });
+  if (data.some((s) => BLOCKING_STATUSES.has(s.status))) {
+    throw new BillingError("already_subscribed", "This project already has a subscription. Use Manage or cancel.");
+  }
 }
 
 /** Starts a subscription Checkout for a paid plan and returns the Stripe-hosted URL. */
@@ -121,6 +132,7 @@ export async function createCheckoutSession(
   }
 
   const store = deps.store ?? getStore();
+  if (project.stripe_customer_id) await assertNoOpenSubscription(stripe, project.stripe_customer_id);
   const appUrl = (deps.appUrl ?? env.appUrl).replace(/\/$/, "");
   const attrs = { project_id: project.id };
 
@@ -143,7 +155,7 @@ export async function createCheckoutSession(
   } catch (err) {
     // The stored customer no longer exists in this Stripe account (e.g. test keys swapped for live ones).
     if (!project.stripe_customer_id || !isMissingResource(err)) throw err;
-    await store.setBilling(project.id, { plan: project.plan, stripe_customer_id: null });
+    await store.setBilling(project.id, { stripe_customer_id: null });
     customerId = await ensureCustomer(stripe, { ...project, stripe_customer_id: null }, store, deps.email, true);
     session = await stripe.checkout.sessions.create(build(customerId));
   }

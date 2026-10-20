@@ -3,7 +3,8 @@ import { env } from "../env";
 
 /**
  * CSRF guard for the form POST routes. Browsers send Origin on cross-site POSTs; if it is present it must be
- * this deployment. A missing Origin (curl, old browsers) is allowed: the session cookie is SameSite=Lax anyway.
+ * this deployment. A missing Origin (curl, old browsers) is allowed. There is no session cookie yet (login lands in
+ * the data-layer PR), so this check is the guard; keep it when auth arrives, alongside SameSite cookies.
  */
 export function isSameOrigin(req: Request): boolean {
   const origin = req.headers.get("origin");
@@ -35,3 +36,5 @@ export function messagePage(title: string, message: string, status: number): Res
 <p style="color:#8e8ea0;margin:0 0 16px">${esc(message)}</p><a href="/dashboard/billing" style="color:#fff">Back to billing</a></main></body>`;
   return new Response(html, { status, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
 }
+
+export const DEMO_BILLING_MESSAGE = "Billing is not available in demo mode.";

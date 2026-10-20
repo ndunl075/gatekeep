@@ -1,5 +1,6 @@
 import Stripe from "stripe";
 import { NextResponse } from "next/server";
+import { getStripe } from "@/lib/billing/stripe";
 import { applyStripeEvent } from "@/lib/billing/webhook";
 import { getStore } from "@/lib/store";
 
@@ -26,8 +27,12 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
   }
 
+  // Events only trigger a re-sync from Stripe, which needs the API key. 503 makes Stripe retry once it is set.
+  const stripe = getStripe();
+  if (!stripe) return NextResponse.json({ error: "Billing is not configured" }, { status: 503 });
+
   try {
-    const result = await applyStripeEvent(event, getStore());
+    const result = await applyStripeEvent(event, getStore(), stripe);
     console.info("stripe webhook", event.type, event.id, result.reason ?? (result.changed ? "applied" : "no change"));
     return NextResponse.json({ received: true });
   } catch (err) {
