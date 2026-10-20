@@ -111,7 +111,7 @@ export const SIGNAL_LABELS: Record<SignalId, string> = {
   signup_burst: "Sudden burst of signups",
   gibberish_name: "Keyboard-mash name",
   gibberish_email: "Machine-generated email",
-  bot_user_agent: "Bot or missing user agent",
+  bot_user_agent: "Bot or empty user agent",
 };
 
 export const signalLabel = (id: string) => SIGNAL_LABELS[id as SignalId] ?? id;

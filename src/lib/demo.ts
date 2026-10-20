@@ -126,7 +126,7 @@ const TEMPLATES: { weight: number; t: Template }[] = [
           },
           {
             id: "dot_alias",
-            points: 10,
+            points: 5,
             detail: "Dots in a Gmail address are ignored by Gmail",
           },
           {

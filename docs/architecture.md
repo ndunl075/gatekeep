@@ -68,12 +68,12 @@ Scoring (points add up, capped at 100; decision from project thresholds, default
 | ip_velocity | 45 / 60 | ≥3 / ≥6 checks from this IP in 24h, this one included |
 | device_velocity | 45 / 60 | ≥3 / ≥6 checks from this device_id in 24h |
 | email_reuse | 35 | normalized email already checked in this project in the last 30 days |
-| bot_user_agent | 30 | user agent missing, or curl / python / headless / bot |
+| bot_user_agent | 30 | user agent sent but empty, or curl / python / headless / bot (an omitted `user_agent` field is not a signal: server-side integrations often cannot send one) |
 | signup_burst | 25 | project checks in last 10 min ≥ 20 and ≥ 5x the trailing 24h average per 10 min |
 | gibberish_email | 25 | local part looks machine generated (consonant runs, digit soup, low bigram score) |
 | gibberish_name | 20 | `name` looks like keyboard mash |
 | plus_alias | 10 | `+tag` present (provider that supports it) |
-| dot_alias | 10 | gmail/googlemail local part contains dots |
+| dot_alias | 5 | gmail/googlemail local part contains dots (weak on its own: many real addresses have dots) |
 
 Normalization: lowercase; googlemail.com → gmail.com; gmail: strip dots and `+tag`; other plus-addressing
 providers (outlook, hotmail, live, icloud, me, proton, fastmail, yahoo uses `-`): strip `+tag`.

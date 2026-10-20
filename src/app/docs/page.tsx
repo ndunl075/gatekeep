@@ -87,7 +87,7 @@ export default function DocsPage() {
           rows={[
             [mono("email"), "string, required", "The address being signed up."],
             [mono("ip"), "string", "The end user's IP address. Powers the same-IP check."],
-            [mono("user_agent"), "string", "The end user's User-Agent header. Missing or script-like values add risk."],
+            [mono("user_agent"), "string", "The end user's User-Agent header. An empty or script-like value adds risk; leaving it out does not."],
             [mono("device_id"), "string", "A stable browser id from the gatekeep.js snippet. Powers the same-device check."],
             [mono("name"), "string", "The display name typed at signup. Used to spot keyboard mash."],
           ]}
@@ -111,12 +111,12 @@ export default function DocsPage() {
         <Code>{`{
   "id": "6f1c0e5e-5a67-4c4b-9f0a-0f6a1d1f5b2a",
   "decision": "challenge",
-  "score": 55,
+  "score": 50,
   "reason": "nico@gmail.com already signed up 4 times; +alias; dots ignored",
   "signals": [
     { "id": "email_reuse", "points": 35, "detail": "nico@gmail.com already signed up 4 times" },
     { "id": "plus_alias",  "points": 10, "detail": "Uses a +alias of n.ico@gmail.com" },
-    { "id": "dot_alias",   "points": 10, "detail": "Dots in a Gmail address are ignored by Gmail" }
+    { "id": "dot_alias",   "points": 5, "detail": "Dots in a Gmail address are ignored by Gmail" }
   ],
   "normalized_email": "nico@gmail.com",
   "latency_ms": 31
@@ -150,12 +150,12 @@ export default function DocsPage() {
             [mono("ip_velocity"), "45 / 60", "3 or more / 6 or more checks from this IP in 24 hours."],
             [mono("device_velocity"), "45 / 60", "3 or more / 6 or more checks from this device_id in 24 hours."],
             [mono("email_reuse"), "35", "The normalized address was already checked in this project in the last 30 days."],
-            [mono("bot_user_agent"), "30", "The user agent is missing, or looks like curl, python, a headless browser or a bot."],
+            [mono("bot_user_agent"), "30", "The user agent was sent empty, or looks like curl, python, a headless browser or a bot. Leaving user_agent out is not a signal."],
             [mono("signup_burst"), "25", "20 or more checks in the last 10 minutes, at least 5x the usual rate."],
             [mono("gibberish_email"), "25", "The part before the @ looks machine generated."],
             [mono("gibberish_name"), "20", "The name looks like keyboard mash."],
             [mono("plus_alias"), "10", "A +tag is present on a provider that supports it."],
-            [mono("dot_alias"), "10", "A Gmail address contains dots, which Gmail ignores."],
+            [mono("dot_alias"), "5", "A Gmail address contains dots, which Gmail ignores."],
           ]}
         />
         <p>
