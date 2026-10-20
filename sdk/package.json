@@ -1,0 +1,36 @@
+{
+  "name": "gatekeep-sdk",
+  "version": "0.1.0",
+  "description": "Block throwaway signups before they burn your free credits. Drop-in for Clerk, Supabase Auth and NextAuth.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./clerk": {
+      "types": "./src/clerk.ts",
+      "default": "./src/clerk.ts"
+    },
+    "./supabase": {
+      "types": "./src/supabase.ts",
+      "default": "./src/supabase.ts"
+    },
+    "./nextauth": {
+      "types": "./src/nextauth.ts",
+      "default": "./src/nextauth.ts"
+    },
+    "./precheck": {
+      "types": "./src/precheck.ts",
+      "default": "./src/precheck.ts"
+    }
+  },
+  "files": [
+    "src",
+    "README.md"
+  ]
+}

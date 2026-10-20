@@ -14,6 +14,11 @@ function defined<T extends object>(patch: T): Partial<T> {
   return Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)) as Partial<T>;
 }
 
+/** Same bounds as the SQL store: limit 1..1000, days 1..366. */
+function clamp(n: number, min: number, max: number): number {
+  return Math.min(Math.max(n, min), max);
+}
+
 export function newId(): string {
   return crypto.randomUUID();
 }
@@ -49,6 +54,13 @@ export class MemoryStore implements Store {
     this.projects.set(p.id, p);
     return p;
   }
+  async ensureProject(ownerId: string, name: string) {
+    // No await between the check and the insert, so this is atomic.
+    const existing = [...this.projects.values()]
+      .filter((p) => p.owner_id === ownerId)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at))[0];
+    return existing ?? (await this.createProject(ownerId, name));
+  }
   async updateProject(id: string, patch: ProjectPatch) {
     const p = this.projects.get(id);
     if (!p) throw new Error("project not found");
@@ -76,11 +88,15 @@ export class MemoryStore implements Store {
       .sort((a, b) => b.created_at.localeCompare(a.created_at));
   }
   async insertKey(key: ApiKey) {
+    // Same as the database: ids and key hashes are unique.
+    if (this.keys.has(key.id) || [...this.keys.values()].some((k) => k.key_hash === key.key_hash)) {
+      throw new Error("duplicate api key");
+    }
     this.keys.set(key.id, key);
   }
   async revokeKey(projectId: string, keyId: string) {
     const k = this.keys.get(keyId);
-    if (k && k.project_id === projectId) this.keys.set(keyId, { ...k, revoked_at: new Date().toISOString() });
+    if (k && k.project_id === projectId && !k.revoked_at) this.keys.set(keyId, { ...k, revoked_at: new Date().toISOString() });
   }
   async touchKey(keyId: string) {
     const k = this.keys.get(keyId);
@@ -88,10 +104,11 @@ export class MemoryStore implements Store {
   }
 
   async insertCheck(log: CheckLog) {
+    if (this.checks.some((c) => c.id === log.id)) throw new Error("duplicate check id");
     this.checks.push(log);
   }
   async listChecks(projectId: string, opts: ListChecksOptions = {}) {
-    const q = opts.search?.toLowerCase();
+    const q = opts.search?.trim().toLowerCase();
     return this.checks
       .filter(
         (c) =>
@@ -101,12 +118,13 @@ export class MemoryStore implements Store {
           (!q || c.email.toLowerCase().includes(q) || (c.ip ?? "").toLowerCase().includes(q)),
       )
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
-      .slice(0, opts.limit ?? 50);
+      .slice(0, clamp(opts.limit ?? 50, 1, 1000));
   }
   async getCheck(projectId: string, checkId: string) {
     return this.checks.find((c) => c.project_id === projectId && c.id === checkId) ?? null;
   }
   async dailyStats(projectId: string, days: number): Promise<DailyStat[]> {
+    days = clamp(days, 1, 366);
     const out = new Map<string, DailyStat>();
     const today = new Date();
     for (let i = days - 1; i >= 0; i--) {
@@ -125,13 +143,14 @@ export class MemoryStore implements Store {
     return this.checks.filter((c) => c.project_id === projectId && c.created_at.startsWith(month)).length;
   }
   async topSignals(projectId: string, days: number) {
+    days = clamp(days, 1, 366);
     const since = utcDate(new Date(Date.now() - (days - 1) * DAY_MS));
     const counts = new Map<SignalId, number>();
     for (const c of this.checks) {
       if (c.project_id !== projectId || c.created_at.slice(0, 10) < since) continue;
       for (const s of c.signals) counts.set(s.id, (counts.get(s.id) ?? 0) + 1);
     }
-    return [...counts.entries()].map(([id, count]) => ({ id, count })).sort((a, b) => b.count - a.count);
+    return [...counts.entries()].map(([id, count]) => ({ id, count })).sort((a, b) => b.count - a.count || a.id.localeCompare(b.id));
   }
 }
 

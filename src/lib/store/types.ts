@@ -29,6 +29,8 @@ export interface Store {
   updateProject(projectId: string, patch: ProjectPatch): Promise<Project>;
   setBilling(projectId: string, patch: BillingPatch): Promise<Project>;
   getProjectByStripeCustomer(customerId: string): Promise<Project | null>;
+  /** The owner's oldest project, creating one named `name` if they have none. Atomic per owner. */
+  ensureProject?(ownerId: string, name: string): Promise<Project>;
 
   // api keys
   /** Looks up an active (not revoked) key by sha256 hash. */
