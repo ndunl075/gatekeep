@@ -4,6 +4,7 @@ import { AppContent } from "@/components/ui/app-window";
 import { MonoLabel, PageTitle, Panel, PanelHeader } from "@/components/ui";
 import { env } from "@/lib/env";
 import { getSnippets } from "@/lib/snippets";
+import { Playground } from "@/components/playground";
 import { StackGuide } from "./stack-guide";
 
 export const dynamic = "force-dynamic";
@@ -37,15 +38,18 @@ export default async function IntegratePage() {
         </Panel>
         <Panel>
           <PanelHeader title="3  Send a test signup" subtitle="Disposable domains score 80 and are blocked." />
-          <div className="px-4 py-3">
-            <MonoLabel className="mb-1.5">Then check the dashboard</MonoLabel>
-            <p className="text-[13px] text-ink-2">
-              Sign up with <code className="font-mono text-[12px]">test@mailinator.com</code> and watch it appear on{" "}
-              <Link href="/dashboard/checks" className="text-ink underline underline-offset-2">
-                Checks
-              </Link>{" "}
-              as a block.
-            </p>
+          <div className="space-y-4 px-4 py-3">
+            <Playground />
+            <div>
+              <MonoLabel className="mb-1.5">Then check the dashboard</MonoLabel>
+              <p className="text-[13px] text-ink-2">
+                Recorded runs appear on{" "}
+                <Link href="/dashboard/checks" className="text-ink underline underline-offset-2">
+                  Checks
+                </Link>
+                .
+              </p>
+            </div>
           </div>
         </Panel>
       </div>
